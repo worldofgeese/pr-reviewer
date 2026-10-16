@@ -6058,4 +6058,30 @@ Reviewed the archive flow.
         assert_eq!(delta.still_blocking, 1);
         assert_eq!(delta.newly_found, 1);
     }
+
+    #[test]
+    fn outdated_threads_keep_the_line_they_were_posted_on() {
+        let mut outdated = review_comment(1, None, "pr-reviewer", "src/fetch.rs", None, BLOCKER);
+        outdated.original_line = Some(40);
+        let memory = build_review_memory(
+            &[],
+            &[outdated],
+            &[],
+            "pr-reviewer",
+            None,
+            "head",
+            Some(&["src/fetch.rs".to_string()]),
+            &HashMap::new(),
+        );
+        assert_eq!(memory.findings[0].line, Some(40));
+        let near = crate::review::policy::FindingRef {
+            path: "src/fetch.rs",
+            line: Some(44),
+            body: BLOCKER_REWORDED,
+        };
+        assert!(
+            crate::review::policy::same_finding_near(memory.findings[0].as_ref(), near),
+            "a re-raise near the original line is still recognised as the open thread"
+        );
+    }
 }
