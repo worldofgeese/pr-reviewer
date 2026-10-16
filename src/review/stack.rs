@@ -26,9 +26,13 @@ const MAX_STACK_DEPTH: usize = 20;
 /// Fingerprint of a PR's own change, overall and per file.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ChangeFingerprint {
-    pub overall: String,
-    /// Per-file hashes, keyed by the file's path in the PR head (old path
-    /// for deleted files). Used to tell which files changed between reviews.
+    /// Key for skipping an unchanged push. `None` when some file in the diff
+    /// has no text hunks (binary, mode-only, too large for a patch): such a
+    /// change cannot be compared, so the push is always reviewed.
+    pub overall: Option<String>,
+    /// Per-file hashes of the files with text hunks, keyed by the file's path
+    /// in the PR head (old path for deleted files). They tell which files
+    /// this PR changed between reviews, also when `overall` is `None`.
     pub files: BTreeMap<String, String>,
 }
 
@@ -64,15 +68,18 @@ impl ChangeFingerprint {
 /// call it guards). A lower PR that edits a line directly next to this
 /// PR's change also alters it, which costs one extra review.
 ///
-/// Returns `None` when the diff has no text hunks to compare, such as a
+/// `overall` is `None` when a file has no text hunks to compare, such as a
 /// binary or mode-only change, or a file too large for a patch: those
-/// pushes are always reviewed.
-pub fn change_fingerprint(diff: &ParsedDiff) -> Option<ChangeFingerprint> {
-    if diff.files.is_empty() || diff.files.iter().any(|file| file.hunks.is_empty()) {
-        return None;
-    }
+/// pushes are always reviewed. The per-file hashes of the other files are
+/// still computed.
+pub fn change_fingerprint(diff: &ParsedDiff) -> ChangeFingerprint {
     let mut files = BTreeMap::new();
+    let mut comparable = !diff.files.is_empty();
     for file in &diff.files {
+        if file.hunks.is_empty() {
+            comparable = false;
+            continue;
+        }
         let mut hasher = Sha256::new();
         hasher.update(file.old_path.as_bytes());
         hasher.update(b"\0");
@@ -88,17 +95,17 @@ pub fn change_fingerprint(diff: &ParsedDiff) -> Option<ChangeFingerprint> {
         };
         files.insert(key, format!("{:x}", hasher.finalize()));
     }
-    let mut overall = Sha256::new();
-    for (path, hash) in &files {
-        overall.update(path.as_bytes());
-        overall.update(b"\0");
-        overall.update(hash.as_bytes());
-        overall.update(b"\n");
-    }
-    Some(ChangeFingerprint {
-        overall: format!("{:x}", overall.finalize()),
-        files,
-    })
+    let overall = comparable.then(|| {
+        let mut overall = Sha256::new();
+        for (path, hash) in &files {
+            overall.update(path.as_bytes());
+            overall.update(b"\0");
+            overall.update(hash.as_bytes());
+            overall.update(b"\n");
+        }
+        format!("{:x}", overall.finalize())
+    });
+    ChangeFingerprint { overall, files }
 }
 
 fn hash_change_groups(hasher: &mut Sha256, lines: &[DiffLine]) {
@@ -440,8 +447,8 @@ index 3333333..5555555 100644
 
     fn fingerprint(diff: &str) -> String {
         change_fingerprint(&parse_unified_diff(diff).unwrap())
-            .expect("text diff has a fingerprint")
             .overall
+            .expect("a text diff has a fingerprint")
     }
 
     #[test]
@@ -676,23 +683,32 @@ index 3333333..5555555 100644
         let binary = format!(
             "{CHILD_DIFF}diff --git a/logo.png b/logo.png\nindex 1..2 100644\nBinary files a/logo.png and b/logo.png differ\n"
         );
-        assert!(change_fingerprint(&parse_unified_diff(&binary).unwrap()).is_none());
-        assert!(change_fingerprint(&parse_unified_diff("").unwrap()).is_none());
+        let with_binary = change_fingerprint(&parse_unified_diff(&binary).unwrap());
+        assert!(
+            with_binary.overall.is_none(),
+            "a push with a binary file is always reviewed"
+        );
+        let text_only = change_fingerprint(&parse_unified_diff(CHILD_DIFF).unwrap());
+        assert_eq!(
+            with_binary.files, text_only.files,
+            "the text files still get per-file hashes"
+        );
+        assert!(change_fingerprint(&parse_unified_diff("").unwrap())
+            .overall
+            .is_none());
     }
 
     #[test]
     fn changed_files_reports_edited_added_and_dropped_files() {
         let second = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,1 @@\n-old\n+new\n";
         let before =
-            change_fingerprint(&parse_unified_diff(&format!("{CHILD_DIFF}{second}")).unwrap())
-                .unwrap();
+            change_fingerprint(&parse_unified_diff(&format!("{CHILD_DIFF}{second}")).unwrap());
         let rebased = change_fingerprint(
             &parse_unified_diff(&format!("{CHILD_DIFF_REBASED}{second}")).unwrap(),
-        )
-        .unwrap();
+        );
         assert!(rebased.changed_files(&before.files).is_empty());
 
-        let edited = change_fingerprint(&parse_unified_diff(CHILD_DIFF_EDITED).unwrap()).unwrap();
+        let edited = change_fingerprint(&parse_unified_diff(CHILD_DIFF_EDITED).unwrap());
         let changed = edited.changed_files(&before.files);
         assert_eq!(
             changed,

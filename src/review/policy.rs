@@ -208,10 +208,12 @@ fn code_identifiers(text: &str) -> HashSet<String> {
     out
 }
 
+/// An unknown line is never near: a thread whose line GitHub no longer
+/// knows must not hide findings anywhere in its file.
 fn lines_are_near(a: FindingRef<'_>, b: FindingRef<'_>) -> bool {
     match (a.line, b.line) {
         (Some(x), Some(y)) => x.abs_diff(y) <= NEAR_LINE_DISTANCE,
-        _ => true,
+        _ => false,
     }
 }
 
@@ -402,6 +404,25 @@ impl CarriedOver {
                 plural(self.still_open),
                 if self.still_open == 1 { "its" } else { "their" },
                 if self.still_open == 1 { "it" } else { "them" },
+            ));
+        }
+        if self.resolved > 0 {
+            lines.push(format!(
+                "- {} {} a thread a human resolved, so I did not post {} again.",
+                self.resolved,
+                if self.resolved == 1 {
+                    "finding matches"
+                } else {
+                    "findings match"
+                },
+                if self.resolved == 1 { "it" } else { "them" },
+            ));
+        }
+        if self.already_noted > 0 {
+            lines.push(format!(
+                "- {} {} already in an earlier follow-up note.",
+                self.already_noted,
+                plural(self.already_noted),
             ));
         }
         for (pr, count) in &self.on_ancestors {
@@ -866,5 +887,28 @@ mod tests {
                 ..first
             }
         ));
+    }
+
+    #[test]
+    fn an_unknown_line_is_never_near() {
+        let thread = FindingRef {
+            path: "src/fetch.rs",
+            line: None,
+            body: "The retry loop in `fetch_all` never sleeps, so a 429 from GitHub spins the CPU and burns the whole rate limit in seconds.",
+        };
+        let other = FindingRef {
+            path: "src/fetch.rs",
+            line: Some(300),
+            body: "`fetch_all` never checks the rate limit header before retrying, so a revoked token keeps sending requests until GitHub blocks the whole app.",
+        };
+        assert!(!same_finding_near(thread, other));
+        assert!(
+            !same_finding(thread, other),
+            "0.5 containment needs a known nearby line"
+        );
+        assert!(
+            !same_finding_near(thread, thread),
+            "without a line nothing is hidden, even the same text"
+        );
     }
 }

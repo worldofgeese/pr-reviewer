@@ -61,7 +61,6 @@ enum FindingStatus {
 
 #[derive(Debug, Clone)]
 struct FindingRecord {
-    key: String,
     path: String,
     line: Option<u32>,
     body: String,
@@ -431,21 +430,15 @@ impl ReviewEngine {
                         None,
                     )
                     .await?;
-                // A reviewed head without a fingerprint (a non-text file in
-                // the diff) clears the old one, so it is never compared
-                // against a review the ledger has moved past.
-                let fingerprint_json = result
-                    .fingerprint
-                    .as_ref()
-                    .map(|fingerprint| serde_json::to_string(&fingerprint.files))
-                    .transpose()?;
-                if result.fingerprint.is_some() || result.status == "completed" {
+                // Recorded only for a review that reached GitHub (or found the
+                // change unchanged), so it always matches the ledger.
+                if let Some(fingerprint) = result.fingerprint.as_ref() {
                     self.db
                         .set_last_reviewed_fingerprint(
                             &repo_name,
                             pr_data.number as i64,
-                            result.fingerprint.as_ref().map(|fp| fp.overall.as_str()),
-                            fingerprint_json.as_deref(),
+                            fingerprint.overall.as_deref(),
+                            Some(&serde_json::to_string(&fingerprint.files)?),
                         )
                         .await?;
                 }
@@ -643,8 +636,8 @@ impl ReviewEngine {
         if policy.skip_unchanged_diff
             && !force
             && prior_sha.is_some()
-            && prior_diff_hash.is_some()
-            && fingerprint.as_ref().map(|fp| fp.overall.as_str()) == prior_diff_hash.as_deref()
+            && fingerprint.overall.is_some()
+            && fingerprint.overall == prior_diff_hash
         {
             tracing::info!(
                 repo = %repo_name,
@@ -672,7 +665,7 @@ impl ReviewEngine {
                 status: "skipped:unchanged-diff".to_string(),
                 verdict: None,
                 comments_posted: 0,
-                fingerprint,
+                fingerprint: Some(fingerprint),
             });
         }
 
@@ -914,7 +907,12 @@ impl ReviewEngine {
             context_with_history.push('\n');
         }
 
-        let mut changed_since_last: Option<HashSet<String>> = None;
+        // Which files this PR's own change touched since the last review comes
+        // from the per-file fingerprints only. The compare diff below also
+        // lists every file a rebase moved, so it would mark findings fixed.
+        let changed_since_last: Option<HashSet<String>> = prior_file_hashes
+            .as_ref()
+            .map(|previous| fingerprint.changed_files(previous));
         if let Some(previous_sha) = prior_sha.as_deref() {
             if let Ok(delta_diff) = self
                 .github
@@ -932,20 +930,7 @@ impl ReviewEngine {
                 ));
                 context_with_history.push_str(&truncate_lines(&delta_diff, 400));
                 context_with_history.push_str("\n```\n");
-                changed_since_last = parse_unified_diff(&delta_diff).ok().map(|delta| {
-                    delta
-                        .files
-                        .iter()
-                        .flat_map(|file| [file.old_path.clone(), file.new_path.clone()])
-                        .collect()
-                });
             }
-        }
-        // The PR's own change per file is exact; the compare diff above also
-        // lists files a rebase brought in from the base. Prefer the former.
-        if let (Some(current), Some(previous)) = (fingerprint.as_ref(), prior_file_hashes.as_ref())
-        {
-            changed_since_last = Some(current.changed_files(previous));
         }
 
         let context_original_bytes = context_with_history.len();
@@ -1362,7 +1347,7 @@ impl ReviewEngine {
                 status: "skipped:no-novel-findings".to_string(),
                 verdict: Some(ReviewVerdict::Comment),
                 comments_posted: 0,
-                fingerprint: fingerprint.clone(),
+                fingerprint: Some(fingerprint.clone()),
             });
         }
 
@@ -1402,7 +1387,7 @@ impl ReviewEngine {
                 status: "skipped:already-posted".to_string(),
                 verdict: Some(ReviewVerdict::Comment),
                 comments_posted: 0,
-                fingerprint: fingerprint.clone(),
+                fingerprint: Some(fingerprint.clone()),
             });
         }
 
@@ -1591,11 +1576,7 @@ impl ReviewEngine {
             comments_posted: if used_retry { 0 } else { inline_comments.len() },
             // Record the change as reviewed only once the review reached
             // GitHub; otherwise the next push with the same change re-reviews.
-            fingerprint: if findings_visible_to_github {
-                fingerprint
-            } else {
-                None
-            },
+            fingerprint: findings_visible_to_github.then_some(fingerprint),
         })
     }
 
@@ -2410,9 +2391,8 @@ fn build_review_memory(
                     status = FindingStatus::ResolvedByHuman;
                 }
                 return Some(FindingRecord {
-                    key: finding_key(&finding.path, finding.line, &finding.body),
                     path: finding.path.clone(),
-                    line: finding.line,
+                    line: finding.line.or(finding.original_line),
                     body: finding.body.clone(),
                     token_set: token_set(&finding.body),
                     status,
@@ -2447,9 +2427,8 @@ fn build_review_memory(
             }
 
             Some(FindingRecord {
-                key: finding_key(&finding.path, finding.line, &finding.body),
                 path: finding.path.clone(),
-                line: finding.line,
+                line: finding.line.or(finding.original_line),
                 body: finding.body.clone(),
                 token_set: token_set(&finding.body),
                 status,
@@ -4496,6 +4475,7 @@ mod tests {
             body: body.to_string(),
             path: path.to_string(),
             line,
+            original_line: None,
             user: test_user(login),
             in_reply_to_id: in_reply_to,
             created_at: format!("2026-03-30T00:{:02}:00Z", id),
@@ -4943,6 +4923,7 @@ Reviewed the archive flow.
                 body: "Blocking: task ownership is wrong here".to_string(),
                 path: "src/task.rs".to_string(),
                 line: Some(42),
+                original_line: None,
                 user: test_user("pr-reviewer"),
                 in_reply_to_id: None,
                 created_at: "2026-03-30T00:00:00Z".to_string(),
@@ -4952,6 +4933,7 @@ Reviewed the archive flow.
                 body: "not taking further task ownership feedback in this PR".to_string(),
                 path: "src/task.rs".to_string(),
                 line: Some(42),
+                original_line: None,
                 user: test_user("NicholaiVogel"),
                 in_reply_to_id: Some(10),
                 created_at: "2026-03-30T00:01:00Z".to_string(),
@@ -4980,6 +4962,7 @@ Reviewed the archive flow.
             body: "Potential blocking issue in task cleanup".to_string(),
             path: "src/task.rs".to_string(),
             line: Some(42),
+            original_line: None,
             user: test_user("pr-reviewer"),
             in_reply_to_id: None,
             created_at: "2026-03-30T00:00:00Z".to_string(),
@@ -5003,11 +4986,6 @@ Reviewed the archive flow.
     fn suppresses_repeated_out_of_scope_finding_without_new_evidence() {
         let memory = ReviewMemory {
             findings: vec![super::FindingRecord {
-                key: finding_key(
-                    "src/task.rs",
-                    Some(42),
-                    "Blocking: task ownership is wrong here",
-                ),
                 path: "src/task.rs".to_string(),
                 line: Some(42),
                 body: "Blocking: task ownership is wrong here".to_string(),
@@ -5037,7 +5015,6 @@ Reviewed the archive flow.
     fn allows_reopening_rebutted_finding_with_evidence_note() {
         let memory = ReviewMemory {
             findings: vec![super::FindingRecord {
-                key: finding_key("src/task.rs", Some(42), "task ownership is wrong here"),
                 path: "src/task.rs".to_string(),
                 line: Some(42),
                 body: "task ownership is wrong here".to_string(),
@@ -5454,7 +5431,6 @@ Reviewed the archive flow.
     fn likely_addressed_finding_is_suppressed() {
         let memory = ReviewMemory {
             findings: vec![super::FindingRecord {
-                key: finding_key("src/old.rs", Some(10), "Bug found here"),
                 path: "src/old.rs".to_string(),
                 line: Some(10),
                 body: "Bug found here".to_string(),
@@ -5560,6 +5536,7 @@ Reviewed the archive flow.
                 body: "Bug: wrong logic here".to_string(),
                 path: "src/task.rs".to_string(),
                 line: Some(10),
+                original_line: None,
                 user: test_bot_user("BusyBee3333"),
                 in_reply_to_id: None,
                 created_at: "2026-03-30T04:16:00Z".to_string(),
@@ -5569,6 +5546,7 @@ Reviewed the archive flow.
                 body: "I disagree, this is intentional".to_string(),
                 path: "src/task.rs".to_string(),
                 line: Some(10),
+                original_line: None,
                 user: test_user("NicholaiVogel"),
                 in_reply_to_id: Some(1),
                 created_at: "2026-03-30T04:17:00Z".to_string(),
@@ -5633,6 +5611,7 @@ Reviewed the archive flow.
                 body: "fine, this looks acceptable".to_string(),
                 path: "src/task.rs".to_string(),
                 line: Some(10),
+                original_line: None,
                 user: test_bot_user("BusyBee3333"),
                 in_reply_to_id: Some(1),
                 created_at: "2026-03-30T00:02:00Z".to_string(),
@@ -5851,7 +5830,7 @@ Reviewed the archive flow.
 
     #[test]
     fn lifecycle_stack_rebase_does_not_resolve_findings_in_untouched_files() {
-        // A cascade rebase brings only the parent's file into the compare diff.
+        // Per-file fingerprints show that only the parent's file changed.
         let stored = vec![ReviewFindingRecord {
             path: "src/child.rs".to_string(),
             ..stored_finding("open", "blocking", "child|1|x")

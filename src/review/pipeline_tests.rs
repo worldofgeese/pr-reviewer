@@ -810,3 +810,99 @@ async fn past_the_limit_notes_do_not_block_and_off_diff_critical_findings_stay_v
     assert!(blocker < nit, "possible blockers are listed first: {body}");
     assert!(body.contains("possible blocker"), "{body}");
 }
+
+#[tokio::test]
+async fn an_outdated_thread_does_not_hide_a_different_finding_elsewhere_in_the_file() {
+    let run = Run::new("outdated-thread");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    // Shares 6 of 12 meaningful words with BLOCKER (containment 0.5), and the
+    // `fetch_all` identifier, but it is a different bug 300 lines away.
+    const RATE: &str = "`fetch_all` never checks the rate limit header before retrying, so a revoked token keeps sending requests until GitHub blocks the whole app.";
+    run.respond(
+        1,
+        review_json(
+            "request_changes",
+            json!([{"file": "src/fetch.rs", "line": 300, "body": RATE, "severity": "blocking",
+                    "finding_kind": "security", "evidence_note": "New line 300 retries without reading the header."}]),
+        ),
+    );
+    let diff = "diff --git a/src/fetch.rs b/src/fetch.rs\n--- a/src/fetch.rs\n+++ b/src/fetch.rs\n@@ -298,2 +298,3 @@\n fn retry(client: &Client) {\n+    client.send_again();\n }\n".replace("@@ -298,2 +298,3 @@\n fn", "@@ -299,2 +299,3 @@\n fn");
+    let mut state = GitHubState::new(pr_json(7, "s2", "feat/fetch", "main"), diff);
+    state.reviews = vec![bot_review(100, "s1", "COMMENTED")];
+    // A push changed the lines under the old thread: GitHub reports no line.
+    let mut outdated = bot_comment(201, 2, BLOCKER);
+    outdated["line"] = Value::Null;
+    outdated["original_line"] = json!(2);
+    state.review_comments = vec![outdated];
+    let gh = mock_github(state);
+    let result = review_round(&config, &db, &gh, 7).await;
+    assert_eq!(result.status, "completed");
+    let posted = gh.posted_reviews.lock().unwrap().clone();
+    let comments = posted[0]["comments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        comments.len(),
+        1,
+        "the new finding is posted, not held back: {posted:?}"
+    );
+    assert_eq!(comments[0]["body"], RATE);
+    assert_eq!(posted[0]["event"], "REQUEST_CHANGES");
+}
+
+#[tokio::test]
+async fn a_rebase_of_a_pr_with_a_binary_file_keeps_its_findings_open() {
+    let run = Run::new("binary-rebase");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    let binary = "diff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n";
+    run.respond(
+        1,
+        review_json(
+            "request_changes",
+            json!([{"file": "src/fetch.rs", "line": 2, "body": BLOCKER, "severity": "blocking",
+                    "finding_kind": "correctness", "evidence_note": "Line 2."}]),
+        ),
+    );
+    run.respond(2, review_json("comment", json!([])));
+
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        format!("{}{binary}", simple_diff("retry_forever();")),
+    ));
+    assert_eq!(review_round(&config, &db, &gh, 7).await.status, "completed");
+
+    // Rebase: same change, new line numbers. GitHub's three-dot compare of the
+    // old and new head lists every file of the PR after a rebase.
+    let rebased = format!(
+        "{}{binary}",
+        simple_diff("retry_forever();").replace("@@ -1,3 +1,4 @@", "@@ -20,3 +20,4 @@")
+    );
+    let mut state = GitHubState::new(pr_json(7, "s2", "feat/fetch", "main"), rebased.clone());
+    state.reviews = vec![bot_review(100, "s1", "CHANGES_REQUESTED")];
+    state.review_comments = vec![bot_comment(201, 2, BLOCKER)];
+    state.compare = Some(("s1".into(), "s2".into(), rebased));
+    let gh = mock_github(state);
+    let result = review_round(&config, &db, &gh, 7).await;
+    assert_eq!(
+        run.reviews_run(),
+        2,
+        "a diff with a binary file is always reviewed"
+    );
+    assert_eq!(result.status, "skipped:no-novel-findings");
+    let ledger = db.list_review_findings("o/r", 7).await.unwrap();
+    assert_eq!(ledger.len(), 1);
+    assert!(
+        matches!(ledger[0].status.as_str(), "open" | "still_blocking"),
+        "a rebase does not fix a finding: {}",
+        ledger[0].status
+    );
+    assert!(
+        gh.dismissed.lock().unwrap().is_empty(),
+        "the change request stays"
+    );
+}

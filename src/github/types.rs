@@ -96,7 +96,11 @@ pub struct ReviewComment {
     pub id: u64,
     pub body: String,
     pub path: String,
+    /// `None` once a push changed the lines under the comment (an outdated
+    /// thread); `original_line` still has where it was posted.
     pub line: Option<u32>,
+    #[serde(default)]
+    pub original_line: Option<u32>,
     pub user: User,
     pub in_reply_to_id: Option<u64>,
     pub created_at: String,
