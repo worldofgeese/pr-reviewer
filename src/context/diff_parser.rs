@@ -57,6 +57,21 @@ impl ParsedDiff {
     pub fn position_for(&self, path: &str, line: u32, side: DiffSide) -> Option<PositionInfo> {
         self.positions.get(&(path.to_string(), line, side)).copied()
     }
+
+    /// Whether `line` of `path` is added (new-file numbering) or removed
+    /// (old-file numbering) by this diff. Unlike `position_for`, context
+    /// lines around a change do not count.
+    pub fn is_changed_line(&self, path: &str, line: u32) -> bool {
+        self.files
+            .iter()
+            .filter(|file| file.new_path == path || file.old_path == path)
+            .flat_map(|file| file.hunks.iter().flat_map(|hunk| hunk.lines.iter()))
+            .any(|diff_line| match diff_line.line_type {
+                DiffLineType::Added => diff_line.new_line == Some(line),
+                DiffLineType::Removed => diff_line.old_line == Some(line),
+                DiffLineType::Context => false,
+            })
+    }
 }
 
 pub fn parse_unified_diff(input: &str) -> Result<ParsedDiff> {
@@ -343,5 +358,18 @@ diff --git a/a.txt b/a.txt
         let parsed = parse_unified_diff(diff).expect("parse diff");
         assert_eq!(parsed.files[0].hunks[0].old_count, 1);
         assert_eq!(parsed.files[0].hunks[0].new_count, 1);
+    }
+
+    #[test]
+    fn changed_lines_exclude_context() {
+        let diff = parse_unified_diff(
+            "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail\n",
+        )
+        .unwrap();
+        assert!(diff.is_changed_line("a.rs", 2), "added line 2");
+        assert!(!diff.is_changed_line("a.rs", 1), "context line 1");
+        assert!(!diff.is_changed_line("a.rs", 3), "context line 3");
+        assert!(diff.position_for("a.rs", 3, DiffSide::Right).is_some());
+        assert!(!diff.is_changed_line("b.rs", 2));
     }
 }

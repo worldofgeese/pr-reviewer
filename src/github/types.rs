@@ -20,6 +20,8 @@ pub struct RepoRef {
     #[serde(default)]
     pub fork: bool,
     pub owner: User,
+    #[serde(default)]
+    pub default_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +55,30 @@ pub struct PullRequest {
     pub updated_at: Option<String>,
     pub closed_at: Option<String>,
     pub merged_at: Option<String>,
+    /// GitHub's native stacked-PR membership (`gh stack`). `None` for PRs
+    /// that are not in a native stack, and on older GitHub versions.
+    #[serde(default)]
+    pub stack: Option<PullRequestStack>,
+}
+
+/// The `stack` object GitHub adds to a PR that belongs to a native stack.
+/// `position` 1 is the bottom PR, which targets the trunk.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullRequestStack {
+    #[serde(default)]
+    pub number: Option<u64>,
+    #[serde(default)]
+    pub size: Option<u32>,
+    #[serde(default)]
+    pub position: Option<u32>,
+    #[serde(default)]
+    pub base: Option<PullRequestStackBase>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullRequestStackBase {
+    #[serde(rename = "ref", default)]
+    pub ref_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

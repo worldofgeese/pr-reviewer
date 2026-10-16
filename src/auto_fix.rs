@@ -744,6 +744,7 @@ mod tests {
             gitnexus: false,
             workflow: vec![],
             auto_fix: Default::default(),
+            review_policy: Default::default(),
         };
         let same_repo = test_pr(42, "feature/fix", "main");
         let fork = test_pr_with_head_repo(43, "feature/fix", "main", "fork/repo");
@@ -768,6 +769,7 @@ mod tests {
             gitnexus: false,
             workflow: vec![],
             auto_fix: Default::default(),
+            review_policy: Default::default(),
         };
         let pr = test_pr(42, "feature/fix", "main");
         let prompt = build_pr_repair_prompt(
@@ -812,6 +814,7 @@ mod tests {
             updated_at: None,
             closed_at: None,
             merged_at: None,
+            stack: None,
         }
     }
 
@@ -820,6 +823,7 @@ mod tests {
             full_name: full_name.to_string(),
             fork: false,
             owner: test_user(owner),
+            default_branch: None,
         }
     }
 

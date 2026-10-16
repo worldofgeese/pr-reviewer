@@ -62,7 +62,8 @@ enum Commands {
         model: Option<String>,
         #[arg(long)]
         reasoning_effort: Option<ReasoningEffort>,
-        /// Bypass the dedupe check by clearing any stale or failed claim for this SHA.
+        /// Bypass the dedupe check by clearing any stale or failed claim for this SHA,
+        /// and review even when the PR's diff is unchanged since the last review.
         /// Has no effect on completed reviews — those entries are preserved.
         #[arg(long)]
         force: bool,
@@ -254,6 +255,7 @@ async fn main() -> Result<()> {
                 gitnexus: true,
                 workflow: vec![],
                 auto_fix: Default::default(),
+                review_policy: Default::default(),
             };
             let repo_name = repo_cfg.full_name();
             cfg.add_repo(repo_cfg.clone())?;
@@ -819,6 +821,7 @@ fn add_scanned_repos(cfg: &mut AppConfig, scan_dir: &Path) -> Result<()> {
             gitnexus: true,
             workflow: vec![],
             auto_fix: Default::default(),
+            review_policy: Default::default(),
         };
 
         if cfg

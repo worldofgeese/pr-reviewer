@@ -126,6 +126,11 @@ max_prompt_bytes = 204800
 | `bot_name` | `pr-reviewer` | GitHub username of the bot account. Used for self-review detection and deduplication. |
 | `dry_run` | `false` | If `true`, run the full pipeline but log the output instead of posting to GitHub. |
 | `max_prompt_bytes` | `204800` | Maximum prompt size sent to the harness (200KB). Context is trimmed to fit. |
+| `max_review_cycles` | `2` | Review rounds that may post inline findings. After this many rounds, new findings that are not critical become non-blocking notes. `0` = no limit. See [Review cycles](#review-cycles). |
+| `critical_finding_kinds` | `["security", "secret_exposure", "data_integrity", "correctness"]` | Finding kinds that can still be posted inline, and request changes, after the limit. |
+| `skip_unchanged_diff` | `true` | Skip the review of a push that leaves the PR's own diff unchanged, such as a rebase. See [Stacked PRs](#stacked-prs). |
+| `stack_aware` | `true` | Detect stacked PRs, tell the reviewer about the parent PR, and drop findings that a lower PR already tracks. |
+| `dismiss_stale_change_requests` | `true` | Dismiss the bot's earlier `REQUEST_CHANGES` reviews when no blocking finding is open. |
 
 ### Tuning context limits
 
@@ -145,6 +150,69 @@ For repos with large, complex PRs:
 pr-reviewer config set defaults.max_diff_lines 5000
 pr-reviewer config set defaults.max_prompt_bytes 307200   # 300KB
 ```
+
+---
+
+## Review cycles
+
+pr-reviewer reviews every new head commit of a PR. Each posted review is one **review round**. Without a limit, every round can add new inline findings, and each one opens a thread that someone must resolve. `max_review_cycles` stops that loop.
+
+| Round | What the bot does |
+|-------|-------------------|
+| 1 | Full review. The prompt asks for every finding now, because later rounds focus on fixes. |
+| 2 to `max_review_cycles` | Verification. The bot checks its earlier findings first. It reports a new finding only for code that changed since its last review, or for a real bug, security or data-integrity problem. |
+| After `max_review_cycles` | Follow-up. New findings go into a **Follow-up notes (non-blocking)** section of the review body. They do not open threads and cannot request changes. |
+
+A **critical finding** is the exception. After the limit it is still posted inline, and it can request changes. A finding is critical when all three are true:
+
+- its severity is `blocking`,
+- its `finding_kind` is in `critical_finding_kinds`,
+- it has an `evidence_note` that names the changed lines.
+
+After the limit, a critical finding must also sit on a line the PR adds or removes. A critical finding elsewhere is listed first in the notes, as a "possible blocker". The default `critical_finding_kinds` includes `correctness`, so a proven blocking bug in changed code can still stop a merge in any round. To bound blocking findings too, remove `correctness` from the list. The cost of the changed-line rule: after the limit, a break in a file the PR did not touch, such as a caller of a changed function, is only a note.
+
+A round is one reviewed commit. The bot counts its earlier reviews on GitHub, so the count survives a reset of its database. If GitHub does not return the list of reviews, the bot tries once more and then fails the review. It does not guess the round.
+
+The bot also does not repeat itself:
+
+- If a new finding matches one of its threads that is still open, the bot does not post it again. The finding stays open, and a blocking one still counts as blocking. If that is all the bot has to say, it posts no review: the thread and the earlier change request still stand.
+- If a human resolved the thread, the finding is dropped. A critical finding opens it again only when this PR's change to that file is different from the last review.
+- A follow-up note is not repeated in later rounds.
+- A stored finding is marked fixed only when this PR's change to its file is different from the last review, or the file left the diff. A push that leaves the file's change as it was cannot fix it.
+
+Two findings match when they are in the same file and share most of their meaningful words. If both quote code identifiers in backticks, they must share one, so the same sentence about `delete_user` and about `update_user` stays two findings. To hide a new finding as "still open" or "resolved", the match must also be within 15 lines. The same rule decides which findings a reply in a review thread, such as "this is intentional", covers, so the reply does not hide unrelated findings in the same file. A comment in the PR conversation that puts a topic out of scope ("not in this PR") is broader: it hides findings on that topic in any file, unless the finding has an `evidence_note`. Critical findings always have one, so they are never hidden this way.
+
+The bot never approves a PR. So its `REQUEST_CHANGES` review would stay on the PR after the findings are fixed. With `dismiss_stale_change_requests`, the bot dismisses its own earlier change requests when no blocking finding is open in its records, after a posted review or after a review with nothing new. If it has no records for the PR, it leaves the change request alone.
+
+Set `max_review_cycles = 0` to keep the old behavior: every round posts every finding inline.
+
+---
+
+## Stacked PRs
+
+A **stacked PR** targets the head branch of another PR instead of the default branch. Its diff shows only its own change. Stack tools such as `gh stack`, Graphite (`gt`) and git-spice rebase and force-push every PR above a PR that changed. Each upper PR then gets a new head commit, although its own change is the same.
+
+With `skip_unchanged_diff`, pr-reviewer stores a fingerprint of each reviewed diff, once the review is on GitHub. The fingerprint covers the file paths, the added and removed lines, and the unchanged line just before and just after each group of changes. It leaves out line numbers, the other context lines and `index` lines. If a new head commit has the same fingerprint as the last reviewed one, the review is skipped (`skipped:unchanged-diff` in `pr-reviewer logs`). The skip does not use up a review round. These pushes keep the fingerprint:
+
+- a rebase onto a moved base branch, for example after a change in a lower PR,
+- the retarget to the default branch after the parent PR merges,
+- a merge of the base branch into the PR branch.
+
+Any change to the PR's own added or removed lines makes the bot review it again. So does moving an added line past an unchanged one, such as a guard moved after the call it guards. A diff with a file that has no text hunks (a binary file, a mode change, a file too large for a patch) has no fingerprint, so it is always reviewed. Use `pr-reviewer review owner/repo#N --force` to review an unchanged diff anyway.
+
+With `stack_aware`, pr-reviewer finds the PR's place in its stack:
+
+1. GitHub's native stack (`gh stack`) adds a `stack` object to the PR. It gives the stack number, the PR's position and the stack size.
+2. For other tools, the bot follows the base branch to the open PR in the same repository whose head branch it is, and repeats this down to the default branch. PRs from forks are never used as parents.
+
+The review prompt then names the parent PR and lists the lower PRs. It tells the reviewer to report findings only on lines this PR changes, and that a checkout of the default branch does not contain the lower PRs' changes. Open findings of the lower PRs are listed in the prompt. A new finding on a line this PR does not change, that matches one of them, is not posted on the upper PR, because the lower PR already tracks it. A finding on a line this PR changes is always this PR's own, and a critical finding is never dropped this way. Findings stay on the PR where they were raised, also after other PRs in the stack merge or rebase.
+
+Limits:
+
+- Stacks are found by branch name. A PR that targets a long-lived branch, such as `develop`, while an open PR merges `develop` into `main`, is treated as stacked on that PR.
+- A skipped push is not reviewed against the new base. A conflict resolution that changes the PR's own lines is reviewed, but a semantic break that a lower PR causes is not. CI catches those.
+- The fingerprint covers text hunks only. A change to a binary file alone does not change it.
+- If a lower branch is force-pushed and the upper branch is not rebased yet, the upper PR's diff can briefly include the lower PR's commits. A review in that window sees the larger diff. `gh stack` pushes all branches at once, which keeps the window short.
 
 ---
 
@@ -211,6 +279,13 @@ max_repairs_per_head = 1
 | `ignore_paths` | Glob patterns for files to exclude from context |
 | `custom_instructions` | Free-text hints appended to the review prompt |
 | `gitnexus` | Whether to include GitNexus impact analysis in context. Default: `true` (best-effort; gracefully skipped if unavailable) |
+| `review_policy` | Per-repo overrides of `max_review_cycles`, `critical_finding_kinds`, `skip_unchanged_diff`, `stack_aware` and `dismiss_stale_change_requests`. Unset fields use `[defaults]`. |
+
+```toml
+[repos.review_policy]
+max_review_cycles = 1
+critical_finding_kinds = ["security", "secret_exposure"]
+```
 
 ### Maintainer work queue
 

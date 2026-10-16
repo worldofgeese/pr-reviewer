@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
@@ -683,6 +684,96 @@ impl GitHubClient {
         Ok(all_comments)
     }
 
+    /// Open PRs in this repository whose head branch is `head_ref`.
+    /// Used to find the parent of a stacked PR from its base branch.
+    pub async fn find_pull_requests_by_head(
+        &self,
+        owner: &str,
+        repo: &str,
+        head_ref: &str,
+    ) -> Result<Vec<PullRequest>> {
+        let head = urlencoding::encode(&format!("{owner}:{head_ref}")).into_owned();
+        let path = format!("/repos/{owner}/{repo}/pulls?state=open&head={head}&per_page=10");
+        let resp = self
+            .request(Method::GET, &path)
+            .send()
+            .await
+            .context("GitHub find PR by head failed")?;
+        self.update_rate_state(resp.headers());
+        handle_json(resp).await
+    }
+
+    /// Whether each review thread is resolved, keyed by the thread's first
+    /// comment id (the REST `id` of the root review comment). The REST API
+    /// does not expose thread resolution, so this uses GraphQL.
+    pub async fn get_review_thread_resolution(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<HashMap<u64, bool>> {
+        const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved comments(first: 1) { nodes { databaseId } } } } } } }";
+        let mut resolution = HashMap::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..10 {
+            let payload = serde_json::json!({
+                "query": QUERY,
+                "variables": {"owner": owner, "name": repo, "number": number, "cursor": cursor},
+            });
+            let resp = self
+                .client
+                .post(self.graphql_url())
+                .header(USER_AGENT, "pr-reviewer/0.1")
+                .bearer_auth(&self.token)
+                .json(&payload)
+                .send()
+                .await
+                .context("GitHub review thread query failed")?;
+            self.update_rate_state(resp.headers());
+            let value: serde_json::Value = handle_json(resp).await?;
+            let (threads, next) = parse_review_thread_page(&value)?;
+            resolution.extend(threads);
+            match next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(resolution)
+    }
+
+    pub async fn dismiss_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        review_id: u64,
+        message: &str,
+    ) -> Result<()> {
+        let path = format!("/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/dismissals");
+        let resp = self
+            .request(Method::PUT, &path)
+            .json(&serde_json::json!({"message": message, "event": "DISMISS"}))
+            .send()
+            .await
+            .context("GitHub dismiss review failed")?;
+        self.update_rate_state(resp.headers());
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("GitHub dismiss review failed ({status}): {body}"));
+        }
+        Ok(())
+    }
+
+    /// `https://api.github.com/graphql`, or `https://HOST/api/graphql` for
+    /// GitHub Enterprise Server, whose REST base ends in `/api/v3`.
+    fn graphql_url(&self) -> String {
+        match self.base_url.strip_suffix("/api/v3") {
+            Some(host) => format!("{host}/api/graphql"),
+            None => format!("{}/graphql", self.base_url),
+        }
+    }
+
     pub async fn get_authenticated_user(&self) -> Result<String> {
         let resp = self
             .request(Method::GET, "/user")
@@ -773,6 +864,41 @@ fn response_has_next_page(headers: &HeaderMap) -> bool {
         .get(LINK)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.contains("rel=\"next\""))
+}
+
+/// One page of `reviewThreads`: (root comment id, resolved) pairs and the
+/// cursor of the next page, if any.
+/// (root comment id, resolved) pairs of one page, and the next page's cursor.
+type ReviewThreadPage = (Vec<(u64, bool)>, Option<String>);
+
+fn parse_review_thread_page(value: &serde_json::Value) -> Result<ReviewThreadPage> {
+    if let Some(errors) = value.get("errors") {
+        return Err(anyhow!("GitHub GraphQL error: {errors}"));
+    }
+    let threads = &value["data"]["repository"]["pullRequest"]["reviewThreads"];
+    if threads.is_null() {
+        return Err(anyhow!("GitHub GraphQL response has no reviewThreads"));
+    }
+    let pairs = threads["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|node| {
+                    let id = node["comments"]["nodes"][0]["databaseId"].as_u64()?;
+                    Some((id, node["isResolved"].as_bool().unwrap_or(false)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let next = if threads["pageInfo"]["hasNextPage"].as_bool() == Some(true) {
+        threads["pageInfo"]["endCursor"]
+            .as_str()
+            .map(ToString::to_string)
+    } else {
+        None
+    };
+    Ok((pairs, next))
 }
 
 async fn handle_json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
@@ -915,5 +1041,130 @@ mod tests {
             .find(|f| f.new_path == "src/ok.rs")
             .expect("src/ok.rs should be in parsed files");
         assert_eq!(ok_file.hunks.len(), 1);
+    }
+
+    fn pr_json(number: u64, head_ref: &str, base_ref: &str) -> serde_json::Value {
+        serde_json::json!({
+            "number": number,
+            "title": format!("PR {number}"),
+            "body": null,
+            "state": "open",
+            "user": {"login": "alice", "type": "User"},
+            "head": {"sha": format!("sha{number}"), "ref": head_ref,
+                     "repo": {"full_name": "o/r", "owner": {"login": "o"}}},
+            "base": {"ref": base_ref,
+                     "repo": {"full_name": "o/r", "owner": {"login": "o"}, "default_branch": "main"}},
+            "stack": {"id": 7, "number": 397, "size": 8, "position": 3,
+                      "base": {"ref": "main", "sha": null}}
+        })
+    }
+
+    #[tokio::test]
+    async fn find_pull_requests_by_head_queries_owner_qualified_head() {
+        use httptest::{matchers::*, responders::*, Expectation, Server};
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(all_of![
+                request::method_path("GET", "/repos/o/r/pulls"),
+                request::query(url_decoded(contains(("head", "o:feat/parent")))),
+                request::query(url_decoded(contains(("state", "open")))),
+            ])
+            .respond_with(json_encoded(serde_json::json!([pr_json(
+                386,
+                "feat/parent",
+                "main"
+            )]))),
+        );
+        let client = GitHubClient::new_with_base("t".into(), &server.url_str("")).unwrap();
+        let prs = client
+            .find_pull_requests_by_head("o", "r", "feat/parent")
+            .await
+            .unwrap();
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 386);
+        let stack = prs[0].stack.as_ref().expect("native stack is parsed");
+        assert_eq!(stack.position, Some(3));
+        assert_eq!(stack.size, Some(8));
+        assert_eq!(prs[0].base.repo.default_branch.as_deref(), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn review_thread_resolution_follows_pagination() {
+        use httptest::{matchers::*, responders::*, Expectation, Server};
+        let page = |nodes: serde_json::Value, next: Option<&str>| {
+            serde_json::json!({"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": next.is_some(), "endCursor": next},
+                "nodes": nodes}}}}})
+        };
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(all_of![
+                request::method_path("POST", "/graphql"),
+                request::body(json_decoded(|b: &serde_json::Value| b["variables"]
+                    ["cursor"]
+                    .is_null())),
+            ])
+            .respond_with(json_encoded(page(
+                serde_json::json!([
+                    {"isResolved": true, "comments": {"nodes": [{"databaseId": 11}]}},
+                    {"isResolved": false, "comments": {"nodes": [{"databaseId": 12}]}}
+                ]),
+                Some("c1"),
+            ))),
+        );
+        server.expect(
+            Expectation::matching(all_of![
+                request::method_path("POST", "/graphql"),
+                request::body(json_decoded(|b: &serde_json::Value| b["variables"]["cursor"] == "c1")),
+            ])
+            .respond_with(json_encoded(page(
+                serde_json::json!([{"isResolved": true, "comments": {"nodes": [{"databaseId": 13}]}}]),
+                None,
+            ))),
+        );
+        let client = GitHubClient::new_with_base("t".into(), &server.url_str("")).unwrap();
+        let resolution = client
+            .get_review_thread_resolution("o", "r", 5)
+            .await
+            .unwrap();
+        assert_eq!(resolution.get(&11), Some(&true));
+        assert_eq!(resolution.get(&12), Some(&false));
+        assert_eq!(resolution.get(&13), Some(&true));
+    }
+
+    #[test]
+    fn review_thread_page_reports_graphql_errors() {
+        let err = parse_review_thread_page(&serde_json::json!({"errors": [{"message": "nope"}]}))
+            .unwrap_err();
+        assert!(err.to_string().contains("nope"));
+    }
+
+    #[test]
+    fn graphql_url_handles_enterprise_server() {
+        let ghes =
+            GitHubClient::new_with_base("t".into(), "https://ghe.example.com/api/v3").unwrap();
+        assert_eq!(ghes.graphql_url(), "https://ghe.example.com/api/graphql");
+        let dotcom = GitHubClient::new("t".into()).unwrap();
+        assert_eq!(dotcom.graphql_url(), "https://api.github.com/graphql");
+    }
+
+    #[tokio::test]
+    async fn dismiss_review_puts_dismissal() {
+        use httptest::{matchers::*, responders::*, Expectation, Server};
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(all_of![
+                request::method_path("PUT", "/repos/o/r/pulls/5/reviews/99/dismissals"),
+                request::body(json_decoded(eq(serde_json::json!({
+                    "message": "fixed", "event": "DISMISS"
+                })))),
+            ])
+            .respond_with(status_code(200)),
+        );
+        let client = GitHubClient::new_with_base("t".into(), &server.url_str("")).unwrap();
+        client
+            .dismiss_review("o", "r", 5, 99, "fixed")
+            .await
+            .unwrap();
     }
 }
