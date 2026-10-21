@@ -1580,6 +1580,101 @@ impl ReviewEngine {
         })
     }
 
+    /// Apply human answers on the bot's threads (resolved, rebutted, out of
+    /// scope) to the finding ledger without a new review, then dismiss the
+    /// bot's change request when nothing blocks any more. Resolving a thread
+    /// changes neither the head nor the PR list, so no review would run to
+    /// notice it, and the PR would stay blocked until the next push.
+    ///
+    /// Call it only for a head that was already reviewed. Returns whether the
+    /// ledger changed.
+    pub async fn sync_human_answers(
+        &self,
+        repo_cfg: &RepoConfig,
+        pr_data: &PullRequest,
+    ) -> Result<bool> {
+        if !repo_cfg
+            .resolved_review_policy(&self.config)
+            .dismiss_stale_change_requests
+        {
+            return Ok(false);
+        }
+        let repo_name = repo_cfg.full_name();
+        let stored = self
+            .db
+            .list_review_findings(&repo_name, pr_data.number as i64)
+            .await?;
+        if !stored.iter().any(|finding| {
+            finding_status_is_active(&finding.status) && finding.severity == "blocking"
+        }) {
+            return Ok(false);
+        }
+
+        let bot_name = self.config.defaults.bot_name.as_str();
+        let bot_alias_owned = match self.authenticated_user.clone() {
+            Some(login) => login,
+            None => self.github.get_authenticated_user().await?,
+        };
+        let bot_alias = Some(bot_alias_owned.as_str());
+        let (owner, name, number) = (&repo_cfg.owner, &repo_cfg.name, pr_data.number);
+        let reviews = comments::get_existing_reviews(&self.github, owner, name, number).await?;
+        if stale_change_requests(&reviews, bot_name, bot_alias, "COMMENT", false).is_empty() {
+            return Ok(false);
+        }
+        let (review_comments, issue_comments, resolved_threads) = tokio::try_join!(
+            comments::get_review_comments(&self.github, owner, name, number, None),
+            comments::get_issue_comments(&self.github, owner, name, number),
+            self.github
+                .get_review_thread_resolution(owner, name, number),
+        )?;
+        let review_memory = build_review_memory(
+            &reviews,
+            &review_comments,
+            &issue_comments,
+            bot_name,
+            bot_alias,
+            pr_data.head.sha.as_str(),
+            None,
+            &resolved_threads,
+        );
+
+        // No new findings, and nothing changed since the last review: only
+        // findings a human answered change status, as they would in a review.
+        let stored_paths: HashSet<String> =
+            stored.iter().map(|finding| finding.path.clone()).collect();
+        let (updates, _, _) = reconcile_finding_ledger(
+            &repo_name,
+            pr_data.number as i64,
+            &pr_data.head.sha,
+            &pr_data.user.login,
+            &stored,
+            &[],
+            &review_memory,
+            &stored_paths,
+            Some(&HashSet::new()),
+        );
+        if updates.is_empty() {
+            return Ok(false);
+        }
+        tracing::info!(
+            repo = %repo_name,
+            pr = pr_data.number,
+            findings = updates.len(),
+            "recording human answers on review threads"
+        );
+        self.db.upsert_review_findings(updates).await?;
+        self.dismiss_stale_change_requests(
+            repo_cfg,
+            pr_data,
+            &reviews,
+            bot_alias,
+            &review_memory,
+            "COMMENT",
+        )
+        .await;
+        Ok(true)
+    }
+
     /// Dismiss the bot's earlier REQUEST_CHANGES reviews when this review does
     /// not request changes and no blocking finding is open. The bot never
     /// approves, so an earlier change request would otherwise keep blocking
@@ -5913,6 +6008,54 @@ Reviewed the archive flow.
             FindingStatus::ResolvedByHuman,
             "an explicit human rebuttal is more specific than resolving"
         );
+    }
+
+    #[test]
+    fn human_answers_close_findings_without_a_new_review() {
+        // What sync_human_answers asks for: no new findings and nothing
+        // changed since the last review, so only a human answer counts.
+        let comments = vec![
+            review_comment(1, None, "pr-reviewer", "src/fetch.rs", Some(40), BLOCKER),
+            review_comment(2, None, "pr-reviewer", "src/cache.rs", Some(12), WARNING),
+        ];
+        let resolved = HashMap::from([(1, true), (2, false)]);
+        let memory = build_review_memory(
+            &[],
+            &comments,
+            &[],
+            "pr-reviewer",
+            None,
+            "head",
+            None,
+            &resolved,
+        );
+        let stored_at = |path: &str, line: u32, body: &str, severity: &str| ReviewFindingRecord {
+            path: path.to_string(),
+            line: Some(i64::from(line)),
+            body: body.to_string(),
+            ..stored_finding("open", severity, &finding_key(path, Some(line), body))
+        };
+        let stored = vec![
+            stored_at("src/fetch.rs", 40, BLOCKER, "blocking"),
+            stored_at("src/cache.rs", 12, WARNING, "warning"),
+        ];
+
+        let (updates, _, _) = reconcile_finding_ledger(
+            "owner/repo",
+            15,
+            "head",
+            "alice",
+            &stored,
+            &[],
+            &memory,
+            &paths(&["src/fetch.rs", "src/cache.rs"]),
+            Some(&HashSet::new()),
+        );
+
+        assert_eq!(updates.len(), 1, "an unanswered finding stays as it is");
+        assert_eq!(updates[0].path, "src/fetch.rs");
+        assert_eq!(updates[0].status, "resolved");
+        assert_eq!(updates[0].resolved_by_sha.as_deref(), Some("head"));
     }
 
     #[test]

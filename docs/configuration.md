@@ -184,6 +184,8 @@ Two findings match when they are in the same file and share most of their meanin
 
 The bot never approves a PR. So its `REQUEST_CHANGES` review would stay on the PR after the findings are fixed. With `dismiss_stale_change_requests`, the bot dismisses its own earlier change requests when no blocking finding is open in its records, after a posted review or after a review with nothing new. If it has no records for the PR, it leaves the change request alone.
 
+A fix can land in a file other than the one the finding is on, for example when the author regenerates code. The finding then stays open, because its own file did not change. To close it, resolve its thread, or answer that it is intentional or out of scope. Resolving a thread does not trigger a review, so while a reviewed PR has a blocking finding open, the daemon reads its review threads at most every 2 minutes. When a human answered every open blocking finding, the daemon records the answers and dismisses the change request. It does not run a review to do this. While the head is not yet reviewed, the daemon leaves the threads to the next review.
+
 Set `max_review_cycles = 0` to keep the old behavior: every round posts every finding inline.
 
 ---

@@ -160,6 +160,8 @@ struct GitHubState {
     /// Status for `GET .../reviews` and `POST .../reviews` (200 = works).
     list_reviews_status: u16,
     post_review_status: u16,
+    /// Root comment ids of the review threads a human resolved.
+    resolved: Vec<u64>,
 }
 
 impl GitHubState {
@@ -173,6 +175,7 @@ impl GitHubState {
             heads: vec![],
             list_reviews_status: 200,
             post_review_status: 200,
+            resolved: vec![],
         }
     }
 }
@@ -241,7 +244,10 @@ fn mock_github(state: GitHubState) -> MockGitHub {
     let threads: Vec<Value> = state
         .review_comments
         .iter()
-        .map(|c| json!({"isResolved": false, "comments": {"nodes": [{"databaseId": c["id"]}]}}))
+        .map(|c| {
+            let resolved = state.resolved.contains(&c["id"].as_u64().unwrap());
+            json!({"isResolved": resolved, "comments": {"nodes": [{"databaseId": c["id"]}]}})
+        })
         .collect();
     server.expect(
         Expectation::matching(request::method_path("POST", "/graphql"))
@@ -414,6 +420,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "completed");
@@ -466,6 +473,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "completed");
@@ -527,6 +535,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "skipped:unchanged-diff");
@@ -577,6 +586,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "completed");
@@ -666,6 +676,7 @@ async fn stacked_child_does_not_repeat_its_parents_findings() {
         )],
         list_reviews_status: 200,
         post_review_status: 200,
+        resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 8).await;
     assert_eq!(result.status, "completed");
@@ -905,4 +916,82 @@ async fn a_rebase_of_a_pr_with_a_binary_file_keeps_its_findings_open() {
         gh.dismissed.lock().unwrap().is_empty(),
         "the change request stays"
     );
+}
+
+#[tokio::test]
+async fn resolving_the_blocking_thread_dismisses_the_change_request_without_a_review() {
+    let run = Run::new("human-answers");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+
+    // Round 1 requests changes for a blocker.
+    let diff = fetch_diff(
+        "@@ -1,3 +1,4 @@",
+        &[
+            " pub fn fetch_all(client: &Client) -> Vec<Page> {",
+            "+    let pages = loop_without_sleep(client);",
+            "     pages",
+            " }",
+        ],
+    );
+    run.respond(
+        1,
+        review_json(
+            "request_changes",
+            json!([{"file": "src/fetch.rs", "line": 2, "body": BLOCKER, "severity": "blocking",
+                    "finding_kind": "correctness",
+                    "evidence_note": "Line 2 calls loop_without_sleep."}]),
+        ),
+    );
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        diff.clone(),
+    ));
+    review_round(&config, &db, &gh, 7).await;
+    assert_eq!(
+        gh.posted_reviews.lock().unwrap()[0]["event"],
+        "REQUEST_CHANGES"
+    );
+
+    // The author fixes it elsewhere and nobody pushes to this file. While the
+    // thread is open, the change request stays.
+    let sync = |resolved: Vec<u64>| {
+        let mut state = GitHubState::new(pr_json(7, "s1", "feat/fetch", "main"), diff.clone());
+        state.reviews = vec![bot_review(100, "s1", "CHANGES_REQUESTED")];
+        state.review_comments = vec![bot_comment(201, 2, BLOCKER)];
+        state.resolved = resolved;
+        let gh = mock_github(state);
+        let config = config.clone();
+        let db = db.clone();
+        async move {
+            let client =
+                GitHubClient::new_with_base("test-token".into(), &gh.server.url_str("")).unwrap();
+            let mut engine = ReviewEngine::new(config.clone(), client, db);
+            engine.init().await;
+            let pr: crate::github::types::PullRequest =
+                serde_json::from_value(pr_json(7, "s1", "feat/fetch", "main")).unwrap();
+            let changed = engine
+                .sync_human_answers(&config.repos[0], &pr)
+                .await
+                .unwrap();
+            let dismissed = gh.dismissed.lock().unwrap().clone();
+            assert!(gh.posted_reviews.lock().unwrap().is_empty());
+            (changed, dismissed)
+        }
+    };
+    assert_eq!(sync(vec![]).await, (false, vec![]));
+
+    // A human resolves the thread: the bot dismisses its change request,
+    // and no review runs.
+    assert_eq!(
+        sync(vec![201]).await,
+        (
+            true,
+            vec!["/repos/o/r/pulls/7/reviews/100/dismissals".to_string()]
+        )
+    );
+    assert_eq!(run.reviews_run(), 1);
+    let ledger = db.list_review_findings("o/r", 7).await.unwrap();
+    assert_eq!(ledger[0].status, "resolved");
 }
