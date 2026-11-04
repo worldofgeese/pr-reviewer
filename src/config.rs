@@ -707,9 +707,18 @@ impl AppConfig {
         let mut value =
             toml::Value::try_from(self.clone()).context("failed to project config to TOML")?;
         set_toml_path(&mut value, key, parse_toml_value(raw_value)?)?;
-        *self = value
+        let updated: AppConfig = value
             .try_into()
             .context("invalid config after applying key")?;
+        // The config types ignore unknown fields, so a key that is not part of
+        // the schema vanishes in the round trip above. A schema key, even an
+        // optional one that was unset, is present once it holds a value.
+        let reprojected =
+            toml::Value::try_from(updated.clone()).context("failed to project config to TOML")?;
+        if get_toml_path(&reprojected, key).is_none() {
+            return Err(anyhow!("unknown config key: {key}"));
+        }
+        *self = updated;
         Ok(())
     }
 
@@ -874,5 +883,64 @@ mod tests {
         }))
         .unwrap();
         assert!(rendered.contains("max_review_cycles = 1"), "{rendered}");
+    }
+
+    #[test]
+    fn set_key_rejects_an_unknown_key_and_names_it() {
+        let mut config = AppConfig::default();
+        let err = config.set_key("nonsense.key", "1").unwrap_err();
+        assert!(err.to_string().contains("nonsense.key"), "{err}");
+        assert_eq!(
+            config.list_toml().unwrap(),
+            AppConfig::default().list_toml().unwrap()
+        );
+    }
+
+    #[test]
+    fn set_key_rejects_a_typo_inside_a_known_table() {
+        let mut config = AppConfig::default();
+        let err = config
+            .set_key("daemon.poll_interval_sec", "31")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("daemon.poll_interval_sec"),
+            "{err}"
+        );
+        assert_eq!(config.daemon.poll_interval_secs, 30);
+    }
+
+    #[test]
+    fn set_key_writes_a_valid_key_that_get_key_returns() {
+        let mut config = AppConfig::default();
+        config.set_key("daemon.poll_interval_secs", "31").unwrap();
+        assert_eq!(
+            config
+                .get_key("daemon.poll_interval_secs")
+                .unwrap()
+                .as_deref(),
+            Some("31")
+        );
+    }
+
+    #[test]
+    fn set_key_accepts_an_optional_key_that_is_currently_unset() {
+        let mut config = AppConfig::default();
+        assert_eq!(config.get_key("harness.reasoning_effort").unwrap(), None);
+        config.set_key("harness.reasoning_effort", "low").unwrap();
+        assert_eq!(
+            config
+                .get_key("harness.reasoning_effort")
+                .unwrap()
+                .as_deref(),
+            Some("low")
+        );
+    }
+
+    #[test]
+    fn set_key_still_rejects_an_invalid_value_for_a_valid_key() {
+        let mut config = AppConfig::default();
+        assert!(config
+            .set_key("daemon.poll_interval_secs", "\"soon\"")
+            .is_err());
     }
 }
