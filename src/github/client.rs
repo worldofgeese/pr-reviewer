@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
@@ -32,6 +33,14 @@ pub enum ListPullsResult {
     },
 }
 
+/// How long to wait for a TCP/TLS connection to GitHub before giving up.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one whole request may take, from connect to the last body byte.
+/// Generous so that a large diff or comment list on a slow link still
+/// completes; short enough that an unreachable GitHub cannot hold the poll
+/// loop or a worker permit for longer than a couple of poll intervals.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
 const OPEN_PRS_PAGE_SIZE: u32 = 100;
 const OPEN_PRS_MAX_PAGES: u32 = 10;
 
@@ -54,7 +63,18 @@ impl GitHubClient {
     }
 
     pub fn new_with_base(token: String, base_url: &str) -> Result<Self> {
+        Self::with_timeouts(token, base_url, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+    }
+
+    fn with_timeouts(
+        token: String,
+        base_url: &str,
+        connect_timeout: Duration,
+        request_timeout: Duration,
+    ) -> Result<Self> {
         let client = Client::builder()
+            .connect_timeout(connect_timeout)
+            .timeout(request_timeout)
             .build()
             .context("failed to build reqwest client")?;
         Ok(Self {
@@ -93,7 +113,10 @@ impl GitHubClient {
                 }
             }
 
-            let resp = req.send().await.context("GitHub list PR request failed")?;
+            let resp = req
+                .send_named()
+                .await
+                .context("GitHub list PR request failed")?;
             self.update_rate_state(resp.headers());
 
             if page == 1 {
@@ -154,7 +177,7 @@ impl GitHubClient {
         let path = format!("/repos/{owner}/{repo}/pulls/{number}");
         let resp = self
             .request(Method::GET, &path)
-            .send()
+            .send_named()
             .await
             .context("GitHub get PR failed")?;
         self.update_rate_state(resp.headers());
@@ -166,7 +189,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::GET, &path)
             .header(ACCEPT, "application/vnd.github.v3.diff")
-            .send()
+            .send_named()
             .await
             .context("GitHub get diff failed")?;
         self.update_rate_state(resp.headers());
@@ -199,7 +222,7 @@ impl GitHubClient {
                 format!("/repos/{owner}/{repo}/pulls/{number}/files?per_page=100&page={page}");
             let resp = self
                 .request(Method::GET, &path)
-                .send()
+                .send_named()
                 .await
                 .context("GitHub get PR files failed")?;
             self.update_rate_state(resp.headers());
@@ -240,7 +263,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::GET, &path)
             .header(ACCEPT, "application/vnd.github.v3.diff")
-            .send()
+            .send_named()
             .await
             .context("GitHub get compare diff failed")?;
         self.update_rate_state(resp.headers());
@@ -272,7 +295,7 @@ impl GitHubClient {
         let endpoint = format!("/repos/{owner}/{repo}/contents/{encoded_path}?ref={reference}");
         let resp = self
             .request(Method::GET, &endpoint)
-            .send()
+            .send_named()
             .await
             .context("GitHub get file content failed")?;
         self.update_rate_state(resp.headers());
@@ -320,7 +343,7 @@ impl GitHubClient {
         let endpoint = format!("/repos/{owner}/{repo}/contents/{encoded_path}?ref={reference}");
         let resp = self
             .request(Method::GET, &endpoint)
-            .send()
+            .send_named()
             .await
             .context("GitHub get file content failed")?;
         self.update_rate_state(resp.headers());
@@ -365,7 +388,7 @@ impl GitHubClient {
         let path = format!("/repos/{owner}/{repo}/git/ref/heads/{encoded_branch}");
         let resp = self
             .request(Method::GET, &path)
-            .send()
+            .send_named()
             .await
             .context("GitHub get branch ref failed")?;
         self.update_rate_state(resp.headers());
@@ -388,7 +411,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::POST, &path)
             .json(&payload)
-            .send()
+            .send_named()
             .await
             .context("GitHub create branch failed")?;
         self.update_rate_state(resp.headers());
@@ -429,7 +452,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::PUT, &endpoint)
             .json(&payload)
-            .send()
+            .send_named()
             .await
             .context("GitHub update file content failed")?;
         self.update_rate_state(resp.headers());
@@ -478,7 +501,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::POST, &path)
             .json(request)
-            .send()
+            .send_named()
             .await
             .context("GitHub create review failed")?;
         self.update_rate_state(resp.headers());
@@ -506,7 +529,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::POST, &path)
             .json(&payload)
-            .send()
+            .send_named()
             .await
             .context("GitHub create issue comment failed")?;
         self.update_rate_state(resp.headers());
@@ -528,7 +551,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::PATCH, &path)
             .json(&payload)
-            .send()
+            .send_named()
             .await
             .context("GitHub update issue comment failed")?;
         self.update_rate_state(resp.headers());
@@ -545,7 +568,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::POST, &path)
             .json(request)
-            .send()
+            .send_named()
             .await
             .context("GitHub create pull request failed")?;
         self.update_rate_state(resp.headers());
@@ -567,7 +590,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::POST, &path)
             .json(&payload)
-            .send()
+            .send_named()
             .await
             .context("GitHub reply to comment failed")?;
         self.update_rate_state(resp.headers());
@@ -593,7 +616,7 @@ impl GitHubClient {
                 format!("/repos/{owner}/{repo}/pulls/{pr_number}/reviews?per_page=100&page={page}");
             let resp = self
                 .request(Method::GET, &path)
-                .send()
+                .send_named()
                 .await
                 .context("GitHub get existing reviews failed")?;
             self.update_rate_state(resp.headers());
@@ -631,7 +654,7 @@ impl GitHubClient {
             }
             let resp = self
                 .request(Method::GET, &path)
-                .send()
+                .send_named()
                 .await
                 .context("GitHub get review comments failed")?;
             self.update_rate_state(resp.headers());
@@ -664,7 +687,7 @@ impl GitHubClient {
             );
             let resp = self
                 .request(Method::GET, &path)
-                .send()
+                .send_named()
                 .await
                 .context("GitHub get issue comments failed")?;
             self.update_rate_state(resp.headers());
@@ -696,7 +719,7 @@ impl GitHubClient {
         let path = format!("/repos/{owner}/{repo}/pulls?state=open&head={head}&per_page=10");
         let resp = self
             .request(Method::GET, &path)
-            .send()
+            .send_named()
             .await
             .context("GitHub find PR by head failed")?;
         self.update_rate_state(resp.headers());
@@ -726,7 +749,7 @@ impl GitHubClient {
                 .header(USER_AGENT, "pr-reviewer/0.1")
                 .bearer_auth(&self.token)
                 .json(&payload)
-                .send()
+                .send_named()
                 .await
                 .context("GitHub review thread query failed")?;
             self.update_rate_state(resp.headers());
@@ -753,7 +776,7 @@ impl GitHubClient {
         let resp = self
             .request(Method::PUT, &path)
             .json(&serde_json::json!({"message": message, "event": "DISMISS"}))
-            .send()
+            .send_named()
             .await
             .context("GitHub dismiss review failed")?;
         self.update_rate_state(resp.headers());
@@ -777,7 +800,7 @@ impl GitHubClient {
     pub async fn get_authenticated_user(&self) -> Result<String> {
         let resp = self
             .request(Method::GET, "/user")
-            .send()
+            .send_named()
             .await
             .context("GitHub get authenticated user failed")?;
         self.update_rate_state(resp.headers());
@@ -899,6 +922,24 @@ fn parse_review_thread_page(value: &serde_json::Value) -> Result<ReviewThreadPag
         None
     };
     Ok((pairs, next))
+}
+
+/// Sends a request and, on failure, names it as `METHOD /path` (never the
+/// token) so a timeout or connection error in the log says which call failed.
+trait SendNamed {
+    async fn send_named(self) -> Result<reqwest::Response>;
+}
+
+impl SendNamed for reqwest::RequestBuilder {
+    async fn send_named(self) -> Result<reqwest::Response> {
+        let (client, request) = self.build_split();
+        let request = request.context("failed to build GitHub request")?;
+        let name = format!("{} {}", request.method(), request.url().path());
+        client
+            .execute(request)
+            .await
+            .map_err(|e| anyhow::Error::new(e).context(name))
+    }
 }
 
 async fn handle_json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
@@ -1165,5 +1206,62 @@ mod tests {
             .dismiss_review("o", "r", 5, 99, "fixed")
             .await
             .unwrap();
+    }
+
+    /// Accepts connections and never answers, like a half-open GitHub.
+    async fn silent_server() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn get_authenticated_user_times_out_against_a_silent_server() {
+        let (url, server) = silent_server().await;
+        let client = GitHubClient::with_timeouts(
+            "secret-token".into(),
+            &url,
+            Duration::from_secs(5),
+            Duration::from_millis(300),
+        )
+        .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(10), client.get_authenticated_user())
+            .await
+            .expect("request outlived the client timeout");
+        server.abort();
+
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("GET /user"), "unnamed request: {message}");
+        assert!(!message.contains("secret-token"), "token leaked: {message}");
+    }
+
+    #[tokio::test]
+    async fn slow_response_within_the_timeout_succeeds() {
+        use httptest::{matchers::*, responders::*, Expectation, Server};
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path("GET", "/user")).respond_with(
+                delay_and_then(
+                    Duration::from_millis(200),
+                    json_encoded(serde_json::json!({"login": "alice"})),
+                ),
+            ),
+        );
+        let client = GitHubClient::with_timeouts(
+            "t".into(),
+            &server.url_str(""),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        assert_eq!(client.get_authenticated_user().await.unwrap(), "alice");
     }
 }
