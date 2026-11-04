@@ -7,3 +7,9 @@ target/
 .claude/
 tmp/
 test_file.txt
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

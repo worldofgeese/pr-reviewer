@@ -1,0 +1,10 @@
+log_level: warning
+behavior:
+    auto_gc_behavior:
+        archive_level: 0
+listener:
+    host: 127.0.0.1
+    port: 56268
+cfg_dir: /Users/dktaohan/projects/pr-reviewer/.beads/dolt/.doltcfg
+user_session_vars: []
+jwks: []

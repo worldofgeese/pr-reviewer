@@ -227,3 +227,17 @@ Before completing any code modification task, verify:
 - Generate docs: `npx gitnexus wiki`
 
 <!-- gitnexus:end -->
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `worldofgeese/pr-reviewer` are the public intake; beads (`bd`) is the work tracker. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage labels plus `bug` / `enhancement`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
