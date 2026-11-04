@@ -2,16 +2,12 @@ use std::path::Path;
 
 use tokio::process::Command;
 
-use crate::config::{HarnessKind, ReasoningEffort};
+use crate::config::ReasoningEffort;
 use crate::harness::Harness;
 
 pub struct OpencodeHarness;
 
 impl Harness for OpencodeHarness {
-    fn kind(&self) -> HarnessKind {
-        HarnessKind::Opencode
-    }
-
     fn name(&self) -> &'static str {
         "opencode"
     }

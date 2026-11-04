@@ -178,6 +178,7 @@ pub async fn scan_and_open_pr(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn repair_marked_pr(
     config: &AppConfig,
     repo_cfg: &RepoConfig,

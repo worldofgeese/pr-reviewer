@@ -90,29 +90,21 @@ impl FromStr for ReasoningEffort {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ForkPolicy {
+    #[default]
     Ignore,
     Limited,
     Full,
 }
 
-impl Default for ForkPolicy {
-    fn default() -> Self {
-        Self::Ignore
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum DaemonMode {
+    #[default]
     Poll,
     Webhook,
-}
-
-impl Default for DaemonMode {
-    fn default() -> Self {
-        Self::Poll
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,7 +339,7 @@ pub struct AutoFixConfig {
     pub max_repairs_per_head: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
     pub harness: HarnessConfig,
@@ -373,15 +365,11 @@ pub struct ServeConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum InstructionPrMode {
+    #[default]
     Conservative,
     Broad,
-}
-
-impl Default for InstructionPrMode {
-    fn default() -> Self {
-        Self::Conservative
-    }
 }
 
 impl Display for InstructionPrMode {
@@ -566,20 +554,6 @@ impl Default for DefaultsConfig {
     }
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            harness: HarnessConfig::default(),
-            github: GitHubConfig::default(),
-            daemon: DaemonConfig::default(),
-            defaults: DefaultsConfig::default(),
-            repos: Vec::new(),
-            serve: ServeConfig::default(),
-            instruction_prs: InstructionPrConfig::default(),
-        }
-    }
-}
-
 impl Default for InstructionPrConfig {
     fn default() -> Self {
         Self {
@@ -710,12 +684,6 @@ impl AppConfig {
             .find(|r| r.full_name().eq_ignore_ascii_case(full_name))
     }
 
-    pub fn get_repo_mut(&mut self, full_name: &str) -> Option<&mut RepoConfig> {
-        self.repos
-            .iter_mut()
-            .find(|r| r.full_name().eq_ignore_ascii_case(full_name))
-    }
-
     pub fn add_repo(&mut self, repo: RepoConfig) -> Result<()> {
         if self
             .repos
@@ -755,7 +723,7 @@ impl AppConfig {
     }
 
     pub fn list_toml(&self) -> Result<String> {
-        Ok(toml::to_string_pretty(self).context("failed to serialize config")?)
+        toml::to_string_pretty(self).context("failed to serialize config")
     }
 }
 

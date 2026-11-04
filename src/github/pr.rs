@@ -1,16 +1,7 @@
 use anyhow::Result;
 
-use crate::github::client::{GitHubClient, ListPullsResult};
+use crate::github::client::GitHubClient;
 use crate::github::types::PullRequest;
-
-pub async fn list_open_prs(
-    client: &GitHubClient,
-    owner: &str,
-    repo: &str,
-    etag: Option<&str>,
-) -> Result<ListPullsResult> {
-    client.list_open_prs(owner, repo, etag).await
-}
 
 pub async fn get_pull_request(
     client: &GitHubClient,

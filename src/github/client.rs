@@ -188,7 +188,7 @@ impl GitHubClient {
             return Err(anyhow!("GitHub get diff failed ({status}): {body}"));
         }
 
-        Ok(resp.text().await.context("failed to read diff response")?)
+        resp.text().await.context("failed to read diff response")
     }
 
     pub async fn get_pr_files(&self, owner: &str, repo: &str, number: u64) -> Result<Vec<PrFile>> {
@@ -251,10 +251,9 @@ impl GitHubClient {
             return Err(anyhow!("GitHub compare diff failed ({status}): {body}"));
         }
 
-        Ok(resp
-            .text()
+        resp.text()
             .await
-            .context("failed to read compare diff response")?)
+            .context("failed to read compare diff response")
     }
 
     pub async fn get_file_content(
@@ -403,6 +402,7 @@ impl GitHubClient {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_file_content(
         &self,
         owner: &str,
@@ -907,10 +907,9 @@ async fn handle_json<T: serde::de::DeserializeOwned>(resp: reqwest::Response) ->
         let body = resp.text().await.unwrap_or_default();
         return Err(anyhow!("GitHub API failed ({status}): {body}"));
     }
-    Ok(resp
-        .json::<T>()
+    resp.json::<T>()
         .await
-        .context("failed decoding GitHub JSON payload")?)
+        .context("failed decoding GitHub JSON payload")
 }
 
 #[cfg(test)]

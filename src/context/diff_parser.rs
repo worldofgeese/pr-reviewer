@@ -15,6 +15,7 @@ pub enum DiffLineType {
     Context,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub content: String,
@@ -24,6 +25,7 @@ pub struct DiffLine {
     pub diff_position: u32,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone)]
 pub struct Hunk {
     pub old_start: u32,
@@ -40,6 +42,7 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone, Copy)]
 pub struct PositionInfo {
     pub diff_position: u32,

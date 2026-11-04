@@ -113,13 +113,6 @@ pub async fn ensure_cloned(owner: &str, name: &str, token: &str) -> Result<PathB
     Ok(path)
 }
 
-/// Fetches latest from origin and resets tracked files to match.
-/// Does not remove untracked or ignored files, so it is safe for configured
-/// user-managed local paths.
-pub async fn fetch_latest(repo_path: &Path, token: &str) -> Result<()> {
-    fetch_latest_inner(repo_path, token, false).await
-}
-
 /// Fetches latest for managed clones and removes untracked/ignored byproducts.
 /// Only use this for bot-owned clone directories.
 pub async fn fetch_latest_managed(repo_path: &Path, token: &str) -> Result<()> {
@@ -430,8 +423,8 @@ pub async fn cleanup(active_repos: &[RepoConfig]) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        changed_file_paths, clean_worktree, fetch_latest, fetch_latest_managed,
-        git_basic_auth_header, parse_status_paths,
+        changed_file_paths, clean_worktree, fetch_latest_managed, git_basic_auth_header,
+        parse_status_paths,
     };
     use std::fs;
     use std::path::Path;
@@ -476,24 +469,6 @@ mod tests {
         assert!(!dir.path().join("untracked.txt").exists());
         assert!(!dir.path().join("ignored.log").exists());
         assert!(dir.path().join("tracked.txt").exists());
-    }
-
-    #[tokio::test]
-    async fn fetch_latest_preserves_local_untracked_and_ignored_files() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_remote_backed_repo(dir.path()).await;
-
-        fs::write(repo.join("untracked.txt"), "local").expect("write untracked");
-        fs::write(repo.join("ignored.log"), "local").expect("write ignored");
-
-        fetch_latest(&repo, "").await.expect("fetch latest");
-
-        assert!(repo.join("untracked.txt").exists());
-        assert!(repo.join("ignored.log").exists());
-        assert_eq!(
-            fs::read_to_string(repo.join("tracked.txt")).expect("read tracked"),
-            "updated"
-        );
     }
 
     #[tokio::test]

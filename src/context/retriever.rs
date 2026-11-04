@@ -30,6 +30,7 @@ const MAX_RELATED_FILE_BYTES: usize = 12 * 1024;
 const MAX_RELATED_FILE_LINES: usize = 220;
 const MAX_GITNEXUS_CONTEXT_BYTES: usize = 32 * 1024;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn assemble_context(
     github: &GitHubClient,
     repo_cfg: &RepoConfig,

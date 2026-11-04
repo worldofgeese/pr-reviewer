@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -21,6 +20,7 @@ impl fmt::Debug for Database {
     }
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone)]
 pub struct PrState {
     pub last_reviewed_sha: Option<String>,
@@ -62,6 +62,7 @@ pub struct RecurringFindingCandidate {
     pub examples: Vec<RecurringFindingExample>,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone)]
 pub struct ReviewLogEntry {
     pub id: i64,
@@ -96,6 +97,7 @@ pub struct ReviewAttemptRecord {
     pub completed_at: Option<String>,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone)]
 pub struct ReviewFindingRecord {
     pub repo: String,
@@ -156,6 +158,7 @@ pub struct WorkItemInsert {
     pub source_comment_id: Option<i64>,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone)]
 pub struct WorkItem {
     pub id: i64,
@@ -559,6 +562,7 @@ impl Database {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn complete_review(
         &self,
         dedupe_key: &str,
@@ -675,6 +679,7 @@ impl Database {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_review_archive(
         &self,
         repo: &str,
@@ -1992,18 +1997,6 @@ pub fn format_stats(stats: &UsageStats) -> String {
     ));
 
     out
-}
-
-pub fn aggregate_verdicts(entries: &[ReviewLogEntry]) -> HashMap<String, i64> {
-    let mut map = HashMap::new();
-    for entry in entries {
-        let key = entry
-            .verdict
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-        *map.entry(key).or_insert(0) += 1;
-    }
-    map
 }
 
 #[cfg(test)]
