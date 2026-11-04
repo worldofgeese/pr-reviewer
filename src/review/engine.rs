@@ -349,6 +349,7 @@ impl ReviewEngine {
 
         // Check if we already posted a review for this SHA before posting in-progress comment,
         // to avoid orphaned "started reviewing" comments when the already-posted guard fires.
+        let mut in_progress_posted = false;
         if !dry_run {
             let reviewer_owner = match &self.authenticated_user {
                 Some(login) => login.clone(),
@@ -392,16 +393,17 @@ impl ReviewEngine {
                         )
                         .await;
                     let durable_body = build_durable_in_progress_comment(pr_data, &in_progress);
-                    if let Err(err) = self
+                    match self
                         .sync_durable_review_comment(repo_cfg, pr_data, &durable_body, true)
                         .await
                     {
-                        tracing::warn!(
+                        Ok(()) => in_progress_posted = true,
+                        Err(err) => tracing::warn!(
                             repo = %repo_cfg.full_name(),
                             pr = pr_data.number,
                             error = %err,
                             "failed to sync durable in-progress review comment"
-                        );
+                        ),
                     }
                 }
             }
@@ -417,6 +419,7 @@ impl ReviewEngine {
                 dry_run,
                 options.force || options.rerun_completed,
                 existing_reviews,
+                in_progress_posted,
             )
             .await;
 
@@ -453,6 +456,34 @@ impl ReviewEngine {
                     .await;
                 Err(err)
             }
+        }
+    }
+
+    /// A review that is skipped after the in-progress comment went up must not
+    /// leave "will follow up shortly" behind: rewrite that comment to say the
+    /// review was skipped and why. Only a comment posted by this run is
+    /// rewritten; an earlier durable comment holds a real review.
+    async fn retract_in_progress_comment(
+        &self,
+        repo_cfg: &RepoConfig,
+        pr_data: &PullRequest,
+        skip_reason: &str,
+        in_progress_posted: bool,
+    ) {
+        if !in_progress_posted {
+            return;
+        }
+        let body = build_durable_skipped_comment(pr_data, skip_reason);
+        if let Err(err) = self
+            .sync_durable_review_comment(repo_cfg, pr_data, &body, false)
+            .await
+        {
+            tracing::warn!(
+                repo = %repo_cfg.full_name(),
+                pr = pr_data.number,
+                error = %err,
+                "failed to update the in-progress comment of a skipped review"
+            );
         }
     }
 
@@ -584,6 +615,7 @@ impl ReviewEngine {
         dry_run: bool,
         force: bool,
         existing_reviews: Vec<PullRequestReview>,
+        in_progress_posted: bool,
     ) -> Result<ReviewRunResult> {
         let repo_name = repo_cfg.full_name();
         let dedupe = dedupe_key(
@@ -647,6 +679,13 @@ impl ReviewEngine {
                 previous_sha = prior_sha.as_deref().unwrap_or_default(),
                 "skipping review: the PR's own change is unchanged since the last review"
             );
+            self.retract_in_progress_comment(
+                repo_cfg,
+                pr_data,
+                "unchanged-diff",
+                in_progress_posted,
+            )
+            .await;
             self.db
                 .complete_review(
                     &dedupe,
@@ -679,6 +718,8 @@ impl ReviewEngine {
                 reason = skip_reason,
                 "skipping review: {skip_reason}",
             );
+            self.retract_in_progress_comment(repo_cfg, pr_data, skip_reason, in_progress_posted)
+                .await;
             self.db
                 .complete_review(
                     &dedupe,
@@ -4357,6 +4398,25 @@ fn build_durable_in_progress_comment(pr_data: &PullRequest, status_comment: &str
     truncate_github_comment_body(&body)
 }
 
+fn build_durable_skipped_comment(pr_data: &PullRequest, skip_reason: &str) -> String {
+    let explanation = match skip_reason {
+        "docs-only" => "the change only touches documentation files",
+        "empty-diff" => "the change has no file changes",
+        "unchanged-diff" => "the change itself is the same as in the last review",
+        _ => "this change does not need one",
+    };
+    let body = format!(
+        "{}\n<!-- pr-reviewer-status:skipped pr={} sha={} reason={skip_reason} -->\n\n\
+         I skipped the review of commit `{}` (`{skip_reason}`): {explanation}.\n\n\
+         _This comment is updated in place by pr-reviewer._",
+        durable_review_marker(pr_data.number),
+        pr_data.number,
+        pr_data.head.sha,
+        pr_data.head.sha,
+    );
+    truncate_github_comment_body(&body)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_durable_review_comment(
     pr_data: &PullRequest,
@@ -4500,17 +4560,18 @@ mod tests {
     use super::{
         apply_scope_drift_policy, blocker_has_sufficient_evidence, build_direct_pushback_reply,
         build_durable_in_progress_comment, build_durable_review_comment,
-        build_durable_review_status_comment, build_final_review_summary_prompt,
-        build_final_review_transcript, build_finding_delta_summary,
-        build_in_progress_comment_fallback, build_prior_reviews_context, build_retry_review_body,
-        build_review_memory, build_review_metadata_block, build_thread_history,
-        durable_review_marker, extract_in_progress_comment, find_durable_review_comment,
-        finding_key, infer_pr_focus, line_is_authored_by_bot, login_matches_bot,
-        looks_like_harness_error_output, looks_like_harness_transport_output,
-        looks_like_reintroduction, normalize_in_progress_comment, normalize_summary_output,
-        pr_reviewer_project_url, reconcile_finding_ledger, resolve_project_url,
-        should_suppress_finding, truncate_github_comment_body, FindingStatus, PendingFinding,
-        ReviewMemory, GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
+        build_durable_review_status_comment, build_durable_skipped_comment,
+        build_final_review_summary_prompt, build_final_review_transcript,
+        build_finding_delta_summary, build_in_progress_comment_fallback,
+        build_prior_reviews_context, build_retry_review_body, build_review_memory,
+        build_review_metadata_block, build_thread_history, durable_review_marker,
+        extract_in_progress_comment, find_durable_review_comment, finding_key, infer_pr_focus,
+        line_is_authored_by_bot, login_matches_bot, looks_like_harness_error_output,
+        looks_like_harness_transport_output, looks_like_reintroduction,
+        normalize_in_progress_comment, normalize_summary_output, pr_reviewer_project_url,
+        reconcile_finding_ledger, resolve_project_url, should_suppress_finding,
+        truncate_github_comment_body, FindingStatus, PendingFinding, ReviewMemory,
+        GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
     };
 
     fn test_user(login: &str) -> User {
@@ -4649,6 +4710,20 @@ Ship the archive feature safely.",
         assert!(body.contains("<!-- pr-reviewer-review pr=15 -->"));
         assert!(body.contains("<!-- pr-reviewer-status:in-progress pr=15 sha=abc123 -->"));
         assert!(body.contains("Taking a look."));
+    }
+
+    #[test]
+    fn durable_skipped_comment_says_the_review_was_skipped_and_why() {
+        let pr = test_pull_request_with_body(Some("Review me."));
+        let body = build_durable_skipped_comment(&pr, "docs-only");
+
+        assert!(body.contains("<!-- pr-reviewer-review pr=15 -->"));
+        assert!(
+            body.contains("<!-- pr-reviewer-status:skipped pr=15 sha=abc123 reason=docs-only -->")
+        );
+        assert!(body.contains("skipped the review of commit `abc123`"));
+        assert!(body.contains("only touches documentation files"));
+        assert!(!body.contains("will follow up"));
     }
 
     #[test]

@@ -183,6 +183,8 @@ impl GitHubState {
 struct MockGitHub {
     server: Server,
     posted_reviews: Arc<Mutex<Vec<Value>>>,
+    /// The bodies of the PR's issue comments, in creation order.
+    issue_comments: Arc<Mutex<Vec<Value>>>,
     dismissed: Arc<Mutex<Vec<String>>>,
 }
 
@@ -233,13 +235,47 @@ fn mock_github(state: GitHubState) -> MockGitHub {
             .times(..)
             .respond_with(json_encoded(Value::Array(state.review_comments.clone()))),
     );
+    // The PR's issue comments, as GitHub keeps them: a create adds one, an
+    // update rewrites it. Comment ids count from 1.
+    let issue_comments: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let issue_comments_path = format!("/repos/o/r/issues/{number}/comments");
+    let listed = issue_comments.clone();
     server.expect(
-        Expectation::matching(request::method_path(
-            "GET",
-            format!("/repos/o/r/issues/{number}/comments"),
-        ))
+        Expectation::matching(request::method_path("GET", issue_comments_path.clone()))
+            .times(..)
+            .respond_with(move || json_encoded(Value::Array(listed.lock().unwrap().clone()))),
+    );
+    let created = issue_comments.clone();
+    let created_back = issue_comments.clone();
+    server.expect(
+        Expectation::matching(all_of![
+            request::method_path("POST", issue_comments_path),
+            request::body(json_decoded(move |body: &Value| {
+                let mut comments = created.lock().unwrap();
+                let id = comments.len() as u64 + 1;
+                comments.push(json!({
+                    "id": id, "body": body["body"],
+                    "user": {"login": "bot-user", "type": "User"},
+                    "created_at": "2026-10-16T10:00:00Z"
+                }));
+                true
+            })),
+        ])
         .times(..)
-        .respond_with(json_encoded(json!([]))),
+        .respond_with(move || json_encoded(created_back.lock().unwrap().last().cloned())),
+    );
+    let updated = issue_comments.clone();
+    let updated_back = issue_comments.clone();
+    server.expect(
+        Expectation::matching(all_of![
+            request::method_path("PATCH", "/repos/o/r/issues/comments/1"),
+            request::body(json_decoded(move |body: &Value| {
+                updated.lock().unwrap()[0]["body"] = body["body"].clone();
+                true
+            })),
+        ])
+        .times(..)
+        .respond_with(move || json_encoded(updated_back.lock().unwrap()[0].clone())),
     );
     let threads: Vec<Value> = state
         .review_comments
@@ -311,6 +347,7 @@ fn mock_github(state: GitHubState) -> MockGitHub {
     MockGitHub {
         server,
         posted_reviews,
+        issue_comments,
         dismissed,
     }
 }
@@ -994,4 +1031,137 @@ async fn resolving_the_blocking_thread_dismisses_the_change_request_without_a_re
     assert_eq!(run.reviews_run(), 1);
     let ledger = db.list_review_findings("o/r", 7).await.unwrap();
     assert_eq!(ledger[0].status, "resolved");
+}
+
+fn comment_bodies(gh: &MockGitHub) -> Vec<String> {
+    gh.issue_comments
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A first-touch diff that `should_skip_review` skips must not leave the
+/// "will follow up shortly" comment behind: the comment is rewritten to say
+/// the review was skipped and why, and no review is posted.
+async fn assert_first_touch_skip_retracts_follow_up(name: &str, diff: &str, reason: &str) {
+    let run = Run::new(name);
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/docs", "main"),
+        diff.to_string(),
+    ));
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, format!("skipped:{reason}"));
+    assert_eq!(run.reviews_run(), 0, "a skipped diff runs no review");
+    assert!(gh.posted_reviews.lock().unwrap().is_empty());
+    let bodies = comment_bodies(&gh);
+    assert_eq!(bodies.len(), 1, "one comment, updated in place: {bodies:?}");
+    assert!(
+        !bodies[0].contains("will follow up"),
+        "no promise of a review that never comes: {}",
+        bodies[0]
+    );
+    assert!(
+        bodies[0].contains("skipped") && bodies[0].contains(reason),
+        "the comment says the review was skipped and why: {}",
+        bodies[0]
+    );
+    assert!(bodies[0].contains("<!-- pr-reviewer-review pr=7 -->"));
+}
+
+#[tokio::test]
+async fn a_docs_only_first_touch_skip_leaves_no_follow_up_promise() {
+    let diff = "diff --git a/README.md b/README.md\nindex 1111111..2222222 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # Title\n+More words.\n";
+    assert_first_touch_skip_retracts_follow_up("skip-docs-only", diff, "docs-only").await;
+}
+
+#[tokio::test]
+async fn an_empty_diff_first_touch_skip_leaves_no_follow_up_promise() {
+    assert_first_touch_skip_retracts_follow_up("skip-empty-diff", "", "empty-diff").await;
+}
+
+#[tokio::test]
+async fn an_unchanged_diff_first_touch_skip_leaves_no_follow_up_promise() {
+    let run = Run::new("skip-unchanged-diff");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    run.respond(1, review_json("no_issues", json!([])));
+
+    // Round 1 reviews s1 and records the change's fingerprint. Its mock is
+    // gone in round 2, so GitHub shows no review: a first touch again.
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+    review_round(&config, &db, &gh, 7).await;
+
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s2", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "skipped:unchanged-diff");
+    let bodies = comment_bodies(&gh);
+    assert_eq!(bodies.len(), 1, "one comment, updated in place: {bodies:?}");
+    assert!(!bodies[0].contains("will follow up"), "{}", bodies[0]);
+    assert!(bodies[0].contains("skipped") && bodies[0].contains("unchanged-diff"));
+}
+
+#[tokio::test]
+async fn a_normal_first_touch_posts_the_follow_up_comment_and_then_the_review() {
+    let run = Run::new("first-touch-review");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    run.respond(1, review_json("no_issues", json!([])));
+
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "completed");
+    assert_eq!(gh.posted_reviews.lock().unwrap().len(), 1);
+    let bodies = comment_bodies(&gh);
+    assert_eq!(bodies.len(), 1, "{bodies:?}");
+    assert!(
+        bodies[0].contains("pr-reviewer-status:in-progress") || bodies[0].contains("Review posted"),
+        "{}",
+        bodies[0]
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_skip_posts_no_comment() {
+    let run = Run::new("skip-dry-run");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    let diff = "diff --git a/README.md b/README.md\nindex 1111111..2222222 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n # Title\n+More words.\n";
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/docs", "main"),
+        diff.to_string(),
+    ));
+    let client = GitHubClient::new_with_base("test-token".into(), &gh.server.url_str("")).unwrap();
+    let mut engine = ReviewEngine::new(config.clone(), client, db.clone());
+    engine.init().await;
+    let options = ReviewOptions {
+        dry_run: true,
+        ..ReviewOptions::default()
+    };
+    let result = engine
+        .review_pr(&config.repos[0], 7, options)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "skipped:docs-only");
+    assert!(comment_bodies(&gh).is_empty());
 }
