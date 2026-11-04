@@ -1,6 +1,6 @@
 # Configuration reference
 
-All configuration lives at `~/.config/pr-reviewer/config.toml`. Every field can be inspected and set via CLI:
+All configuration lives in `config.toml` in the config directory. See [Environment variables](environment.md#config-directory) for its path on your operating system. Every field can be inspected and set via CLI:
 
 ```bash
 pr-reviewer config list
@@ -33,7 +33,7 @@ Controls which AI CLI tool runs reviews and how long to wait for a response.
 default = "claude-code"   # claude-code | opencode | codex
 model = "claude-sonnet-4-6"
 reasoning_effort = "low"  # optional, currently used by codex
-timeout_secs = 600
+timeout_secs = 1800
 ```
 
 | Field | Default | Description |
@@ -41,7 +41,7 @@ timeout_secs = 600
 | `default` | `claude-code` | Harness to use when no per-repo override is set |
 | `model` | `claude-sonnet-4-6` | Model identifier passed to the harness CLI |
 | `reasoning_effort` | unset | Optional reasoning effort override. When using Codex, pr-reviewer passes this through as `-c model_reasoning_effort="..."` |
-| `timeout_secs` | `600` | Seconds to wait for a harness response before treating the review as failed |
+| `timeout_secs` | `1800` | Seconds to wait for a harness response before treating the review as failed |
 
 ### Harness selection guide
 
@@ -208,7 +208,7 @@ max_repairs_per_head = 1
 |-------|-------------|
 | `owner` | GitHub organization or username |
 | `name` | Repository name |
-| `local_path` | Path to an existing local clone. If omitted, the repo is auto-cloned to `~/.config/pr-reviewer/repos/{owner}/{name}/` |
+| `local_path` | Path to an existing local clone. If omitted, the repo is auto-cloned to `repos/{owner}/{name}/` in the config directory |
 | `harness` | Override the global harness for this repo |
 | `model` | Override the global model for this repo |
 | `fork_policy` | How to handle PRs from forks (see [Fork policy](../explanation/how-a-review-works.md#fork-policy)) |
@@ -259,7 +259,7 @@ When enabled, pr-reviewer enriches context with:
 
 ### Auto-managed clones vs local_path
 
-When `local_path` is omitted, pr-reviewer clones the repo to `~/.config/pr-reviewer/repos/{owner}/{name}/` and manages it automatically:
+When `local_path` is omitted, pr-reviewer clones the repo to `repos/{owner}/{name}/` in the config directory and manages it automatically:
 
 - Git hooks are disabled (`core.hooksPath=/dev/null`)
 - Auth is passed via `http.extraHeader`, never stored in the remote URL

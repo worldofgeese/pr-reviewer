@@ -10,9 +10,9 @@ Read [How a review works](explanation/how-a-review-works.md). It explains review
 
 ### I run pr-reviewer
 
-1. Follow the [getting started tutorial](tutorials/getting-started.md).
-2. [Run pr-reviewer as a service](how-to/run-as-a-service.md).
-3. [Back up and upgrade](how-to/back-up-and-upgrade.md).
+1. Follow the [first review tutorial](tutorials/getting-started.md). You install version 0.2.0, review a pull request in a throwaway repository and start the daemon. It takes about 15 minutes.
+2. [Run pr-reviewer as a service](how-to/run-as-a-service.md) with launchd on macOS or systemd on Linux.
+3. [Back up and upgrade](how-to/back-up-and-upgrade.md) before you install a new version.
 4. Look things up in the [CLI reference](reference/cli.md), the [configuration reference](reference/configuration.md) and the [environment variables](reference/environment.md).
 5. If something fails, see [Troubleshooting](reference/troubleshooting.md).
 
@@ -27,7 +27,7 @@ Read [How a review works](explanation/how-a-review-works.md). It explains review
 
 | Kind | Page |
 |------|------|
-| Tutorial | [Getting started](tutorials/getting-started.md) |
+| Tutorial | [Run your first review](tutorials/getting-started.md) |
 | How-to guide | [Run as a service](how-to/run-as-a-service.md) |
 | How-to guide | [Back up and upgrade](how-to/back-up-and-upgrade.md) |
 | Reference | [CLI](reference/cli.md) |

@@ -1,14 +1,34 @@
 # Troubleshooting
 
-Common issues and how to fix them. Start with `RUST_LOG=debug pr-reviewer <command>` to get verbose output for any problem.
+This page lists common failures by symptom, with the cause and the fix. For any problem, run the command again with `RUST_LOG=debug` in front of it to get verbose output, as in `RUST_LOG=debug pr-reviewer status`.
+
+In this page, the **config directory** is the folder where pr-reviewer keeps its configuration and state. Its path depends on your operating system. See [Environment variables](environment.md#config-directory).
+
+## Commands show the wrong state
+
+### `status` says the daemon is stopped, but a daemon runs
+
+Each config directory has its own daemon, database and token. Your shell and your service can use different directories. Check the variable in your shell:
+
+```bash
+echo "${PR_REVIEWER_CONFIG_DIR:-not set}"
+```
+
+If the variable is set, `pr-reviewer` reads that directory and not the default. Run `unset PR_REVIEWER_CONFIG_DIR` to use the default directory again.
+
+### `init` removed my configuration
+
+`init` replaces `config.toml` with the defaults. Restore your last backup. See [Back up and upgrade](../how-to/back-up-and-upgrade.md#restore-the-state). Run `init` only once for each config directory.
+
+---
 
 ---
 
 ## Token errors
 
-### "no GitHub token configured"
+### "GitHub token not found"
 
-No token is available from any source. Set one:
+No token is available from any source. This also happens when `PR_REVIEWER_CONFIG_DIR` points at a directory that has no token. Set one:
 
 ```bash
 pr-reviewer config set-token --passphrase
@@ -23,7 +43,7 @@ See `pr-reviewer config token-status` to confirm which source is active and what
 The token is present but rejected. Likely causes:
 
 - The token has expired (fine-grained PATs expire)
-- The token is missing required scopes — needs `pull_requests:read+write` and `contents:read` (fine-grained), or `repo` (classic). If `repos.auto_fix.enabled = true`, it also needs `contents:write` so it can push fix branches.
+- The token lacks a required scope. It needs `pull_requests:read+write` and `contents:read` (fine-grained), or `repo` (classic). If `repos.auto_fix.enabled = true`, it also needs `contents:write` so it can push fix branches.
 - The token was revoked
 
 Generate a new PAT and re-run `pr-reviewer config set-token --passphrase`.
@@ -42,9 +62,25 @@ Or see [Run as a service](../how-to/run-as-a-service.md) for the systemd `Enviro
 
 ### `set-token` fails silently or exits with error
 
-- Make sure `~/.config/pr-reviewer/` exists (`pr-reviewer init` creates it)
+- Make sure that the config directory exists (`pr-reviewer init` creates it)
 - If using `--signet`, confirm Signet is installed and `signet secret set GITHUB_TOKEN` works independently
 - If piping via `--stdin`, confirm the token has no trailing newline issues: `printf '%s' "$TOKEN" | pr-reviewer config set-token --stdin`
+
+---
+
+## Adding and reviewing repositories
+
+### `add` fails with "git clone failed" and "Repository not found"
+
+The clone uses your token over HTTPS. GitHub reports "Repository not found" when the name is wrong or when the token cannot see the repository. Check the name, and make sure that the token has access to the repository. For a private repository, a classic token needs the `repo` scope. A fine-grained token must list the repository.
+
+### `review` fails with "repo not configured"
+
+The repository is not a watched repository in this config directory. Run `pr-reviewer list` to see the watched repositories, then `pr-reviewer add owner/repo`.
+
+### `review` fails with "invalid target format"
+
+The target must have the form `owner/repo#number`, for example `pr-reviewer review owner/repo#42`. Quote the target in `zsh` if your shell treats `#` as a comment.
 
 ---
 
@@ -60,13 +96,13 @@ pr-reviewer status
 
 This shows remaining API quota and the next reset time.
 
-If you're hitting limits regularly:
+If you reach the limit often:
 
 - Increase `daemon.poll_interval_secs` in config (e.g., from 30 to 60)
 - Reduce `daemon.max_concurrent_reviews` to serialize reviews instead of running them in parallel
 - Reduce the number of watched repos
 
-The daemon uses ETag caching on list endpoints — unchanged responses don't count against your quota. This is working correctly when you see `304 Not Modified` in debug logs.
+The daemon caches the ETag of each list response. An unchanged response does not count against your quota. The cache works when you see `304 Not Modified` in the debug log.
 
 ---
 
@@ -103,7 +139,7 @@ The installer now refreshes a `~/.local/bin/pr-reviewer` shim for Cargo installs
 
 ### The harness runs but authentication fails
 
-AI CLIs need to be authenticated separately. pr-reviewer strips `ANTHROPIC_API_KEY` and similar variables from the harness environment intentionally — the expectation is that Claude Code, OpenCode, or Codex are authenticated via their own login mechanisms (browser auth, CLI login), not environment variables.
+AI CLIs need to be authenticated separately. pr-reviewer removes `ANTHROPIC_API_KEY` and similar variables from the environment of the AI CLI on purpose. Sign in to Claude Code, OpenCode or Codex with the login of the tool itself, not with environment variables.
 
 Confirm the harness works outside of pr-reviewer:
 
@@ -119,12 +155,12 @@ codex exec "hello"
 
 ### Review logged as failed with "timeout"
 
-The default timeout is 600 seconds (10 minutes). Very large PRs or slow models can exceed this.
+The default timeout is 1800 seconds (30 minutes). Very large PRs or slow models can exceed this.
 
 Increase it in config:
 
 ```bash
-pr-reviewer config set harness.timeout_secs 900
+pr-reviewer config set harness.timeout_secs 3600
 ```
 
 Or per-repo via `config.toml`:
@@ -133,7 +169,7 @@ Or per-repo via `config.toml`:
 [[repos]]
 owner = "your-org"
 name = "large-repo"
-# custom timeout not yet per-repo — use global harness.timeout_secs
+# the timeout is global only: use harness.timeout_secs
 ```
 
 ### "failed to parse harness output" or review posted with no comments
@@ -165,7 +201,7 @@ pr-reviewer config set defaults.max_files 25
 
 ### Review runs but nothing appears on GitHub
 
-First check if it's a dry-run:
+First check whether dry run is on:
 
 ```bash
 pr-reviewer config get defaults.dry_run
@@ -198,8 +234,8 @@ name = "your-repo"
 
 Fork PRs are skipped when `fork_policy = "ignore"` (the default). Options:
 
-- `limited` — reviews the diff but does not include full file contents (safer for untrusted forks)
-- `full` — full context, treat like a non-fork PR
+- `limited` reviews the diff but does not include full file contents. This is safer for untrusted forks.
+- `full` gives the full context, as for a pull request that is not from a fork.
 
 ```toml
 [[repos]]
@@ -232,24 +268,10 @@ If duplicates are appearing:
 
 ### Review stuck in "in-progress" state after a crash
 
-Stale claims older than `harness.timeout_secs + 30s` are automatically swept on daemon startup. If you need to clear them immediately:
+The daemon sweeps stale claims, which are older than `harness.timeout_secs` plus 30 seconds, when it starts. To clear a stale or failed claim for one pull request at once, run the review again with `--force`:
 
 ```bash
-# Not yet a CLI command — clear via sqlite3 directly
-
-# Check how many stale claims exist first
-sqlite3 ~/.config/pr-reviewer/state.db \
-  "SELECT COUNT(*) FROM pr_state WHERE status = 'in_progress';"
-
-# Clear them
-sqlite3 ~/.config/pr-reviewer/state.db \
-  "UPDATE pr_state SET status = 'pending' WHERE status = 'in_progress';"
-
-# Verify the update took effect (should return 0)
-sqlite3 ~/.config/pr-reviewer/state.db \
-  "SELECT COUNT(*) FROM pr_state WHERE status = 'in_progress';"
-
-pr-reviewer start
+pr-reviewer review owner/repo#42 --force
 ```
 
 ---
@@ -267,7 +289,7 @@ pr-reviewer status
 If it reports no daemon, the PID file is stale. Remove it:
 
 ```bash
-rm ~/.config/pr-reviewer/daemon.pid
+rm "$PR_REVIEWER_CONFIG_DIR/daemon.pid"   # or daemon.pid in your config directory
 pr-reviewer start --daemon
 ```
 
@@ -275,8 +297,8 @@ pr-reviewer start --daemon
 
 Only one pr-reviewer process should access the state database at a time. If you see this:
 
-1. Confirm no other pr-reviewer process is running: `pgrep -a pr-reviewer`
-2. Kill any zombie processes: `pkill pr-reviewer`
+1. Confirm that only one daemon runs on this config directory: `pr-reviewer status`
+2. Stop it with `pr-reviewer stop`, or with your service manager
 3. The WAL mode journal files (`.db-wal`, `.db-shm`) left behind by a crashed process are safe to delete if no pr-reviewer process is running
 
 ### Daemon starts but immediately stops
@@ -284,21 +306,39 @@ Only one pr-reviewer process should access the state database at a time. If you 
 Check the logs:
 
 ```bash
-# If using systemd
+# systemd on Linux
 journalctl -u pr-reviewer -n 50
 
-# If started manually with --daemon
-RUST_LOG=info pr-reviewer start   # run foreground first to see startup errors
+# launchd on macOS: the log file named in the plist
+tail -n 50 ~/Library/Logs/pr-reviewer.log
+
+# started with --daemon: run in the foreground to see startup errors
+RUST_LOG=info pr-reviewer start
 ```
 
 Common causes: missing token, config parse error, binary not found.
 
+`pr-reviewer start --daemon` discards all output, so it shows no error. Run `RUST_LOG=info pr-reviewer start` in the foreground, or use a service manager. See [Run pr-reviewer as a service](../how-to/run-as-a-service.md).
+
+### The service stops with "failed to run ioreg" (macOS)
+
+Without a passphrase, pr-reviewer decrypts the token with a key that it derives from the ID of the machine. On macOS it reads this ID with `ioreg`, which lives in `/usr/sbin`. A LaunchAgent has a short `PATH`. Add `/usr/sbin` to the `PATH` in the plist, then restart the service:
+
+```xml
+<key>PATH</key>
+<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+```
+
+### The daemon starts again after `pr-reviewer stop`
+
+A service manager restarts a daemon that exits. Stop the service with the service manager instead: `launchctl bootout "gui/$(id -u)/com.example.pr-reviewer"` on macOS, or `sudo systemctl stop pr-reviewer` on Linux.
+
 ### Reviews fail with "harness executable ... was not found in PATH"
 
 The daemon process cannot see the configured AI CLI (`claude`, `opencode`, or `codex`).
-This is common under systemd because services do not inherit your shell startup files.
+This is common in a service, because a service does not read your shell startup files. For launchd on macOS, set `PATH` in the `EnvironmentVariables` of the plist. See [Run pr-reviewer as a service](../how-to/run-as-a-service.md).
 
-Check the service environment:
+Check the service environment on Linux:
 
 ```bash
 systemctl show pr-reviewer --property=Environment
@@ -307,7 +347,7 @@ systemctl show pr-reviewer --property=Environment
 Add the CLI install directory to the unit file:
 
 ```ini
-Environment=PATH=/home/nicholai/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+Environment=PATH=/home/youruser/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
 ```
 
 Then reload and restart:
@@ -323,7 +363,7 @@ sudo systemctl restart pr-reviewer
 
 ### GitNexus warnings in logs but reviews still work
 
-GitNexus is fully optional. If it's not installed or the repo isn't indexed, pr-reviewer falls back to diff + file contents only — reviews still run. The warning is informational.
+GitNexus is optional. If it is not installed or the repository is not indexed, pr-reviewer uses only the diff and the file contents. Reviews still run. The warning is for information only.
 
 ### "gitnexus: command not found"
 
@@ -355,8 +395,8 @@ pr-reviewer index owner/repo
 npx gitnexus analyze /path/to/repo
 ```
 
-The `.gitnexus/` directory in the repo root indicates it's been indexed. If the directory is missing, the index has never been built.
+The `.gitnexus/` directory in the repo root shows that the repository has an index. If the directory is missing, the index has never been built.
 
 ### GitNexus output appears on stderr, not stdout
 
-This is expected — KuzuDB (GitNexus's graph database) captures stdout at the OS level, so GitNexus routes its output through stderr. pr-reviewer checks both streams, preferring stderr. You don't need to do anything; this is handled internally.
+This is expected. KuzuDB, the graph database of GitNexus, captures standard output at the operating system level, so GitNexus writes its output to standard error. pr-reviewer reads both streams and prefers standard error. You do not need to do anything.
