@@ -1,5 +1,6 @@
-use crate::config::RepoConfig;
+use crate::config::{RepoConfig, ReviewPolicy};
 use crate::github::types::PullRequest;
+use crate::review::policy::{ReviewRound, RoundMode};
 
 pub fn build_review_prompt(
     repo_cfg: &RepoConfig,
@@ -9,6 +10,9 @@ pub fn build_review_prompt(
     repo_conventions: Option<&str>,
     has_prior_reviews: bool,
     ui_files_changed: Option<&[String]>,
+    round: ReviewRound,
+    policy: &ReviewPolicy,
+    stack_context: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
 
@@ -121,6 +125,17 @@ pub fn build_review_prompt(
         repo_cfg.owner, repo_cfg.name,
     ));
     prompt.push_str(&format!("Pull Request: #{}\n", pr.number));
+    prompt.push_str(&format!("Base branch: `{}`\n", pr.base.ref_name));
+
+    if let Some(section) = build_round_section(round, policy) {
+        prompt.push_str("\n## Review Round\n");
+        prompt.push_str(&section);
+    }
+
+    if let Some(stack) = stack_context.filter(|text| !text.trim().is_empty()) {
+        prompt.push_str("\n## Stacked PR\n");
+        prompt.push_str(stack);
+    }
 
     if let Some(conventions) = repo_conventions {
         if !conventions.trim().is_empty() {
@@ -144,6 +159,32 @@ pub fn build_review_prompt(
     prompt
 }
 
+/// Tells the model what this round is for. `None` keeps the old prompt for
+/// unlimited later rounds.
+fn build_round_section(round: ReviewRound, policy: &ReviewPolicy) -> Option<String> {
+    let kinds = policy
+        .critical_finding_kinds
+        .iter()
+        .map(|kind| format!("\"{}\"", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match round.mode {
+        RoundMode::Full if round.number == 1 && round.limit > 0 => Some(format!(
+            "This is the first review of this PR. Make it complete: report every finding you have now. Later rounds verify fixes, and after round {} new findings are only shown as non-blocking notes.\n",
+            round.limit
+        )),
+        RoundMode::Full => None,
+        RoundMode::Verification => Some(format!(
+            "This is review round {} of up to {} rounds with inline findings. First check each earlier finding in the context (Previously Flagged Items, Persisted Finding Ledger): leave out the ones that are fixed, and repeat one that is still present only with its earlier wording. Report a new finding only if it is in code changed since your last review (see the incremental diff) or it is a real bug, security or data-integrity problem. Do not raise new wording, style or documentation points about code you already reviewed.\n",
+            round.number, round.limit
+        )),
+        RoundMode::FollowUp => Some(format!(
+            "This is review round {}, after the limit of {} rounds with inline findings. New findings are shown as non-blocking notes, not as review threads. A finding is posted inline, and can block the merge, only if its severity is \"blocking\", its finding_kind is one of [{kinds}], and its evidence_note names the exact changed lines that prove it. Use that only for real defects. Keep this review short: say what is fixed, and list at most a few new notes.\n",
+            round.number, round.limit
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +203,7 @@ mod tests {
             full_name: full_name.to_string(),
             fork: false,
             owner: test_user("owner"),
+            default_branch: None,
         }
     }
 
@@ -180,6 +222,7 @@ mod tests {
             gitnexus: true,
             workflow: vec![],
             auto_fix: AutoFixConfig::default(),
+            review_policy: Default::default(),
         }
     }
 
@@ -204,6 +247,7 @@ mod tests {
             updated_at: None,
             closed_at: None,
             merged_at: None,
+            stack: None,
         }
     }
 
@@ -217,6 +261,9 @@ mod tests {
             None,
             false,
             None,
+            ReviewRound::after_prior_reviews(0, 2),
+            &ReviewPolicy::default(),
+            None,
         );
 
         assert!(prompt.contains("persistent repository maintainer agent"));
@@ -229,5 +276,62 @@ mod tests {
         assert!(!prompt.contains("You are an automated review tool"));
         assert!(!prompt.contains("first line must identify this as an automated bot review"));
         assert!(!prompt.contains("\"summary\": \"[Automated Review]"));
+    }
+
+    fn prompt_for(prior_reviews: u32, limit: u32, stack: Option<&str>) -> String {
+        build_review_prompt(
+            &test_repo_config(),
+            &test_pull_request(),
+            "diff context",
+            "bot",
+            None,
+            prior_reviews > 0,
+            None,
+            ReviewRound::after_prior_reviews(prior_reviews, limit),
+            &ReviewPolicy::default(),
+            stack,
+        )
+    }
+
+    #[test]
+    fn first_round_asks_for_a_complete_review() {
+        let prompt = prompt_for(0, 2, None);
+        assert!(prompt.contains("This is the first review of this PR. Make it complete"));
+        assert!(prompt.contains("after round 2 new findings are only shown as non-blocking notes"));
+        assert!(prompt.contains("Base branch: `main`"));
+    }
+
+    #[test]
+    fn verification_round_focuses_on_earlier_findings() {
+        let prompt = prompt_for(1, 2, None);
+        assert!(prompt.contains("This is review round 2 of up to 2 rounds"));
+        assert!(prompt.contains("First check each earlier finding"));
+    }
+
+    #[test]
+    fn follow_up_round_states_the_critical_bar() {
+        let prompt = prompt_for(4, 2, None);
+        assert!(prompt.contains("This is review round 5, after the limit of 2 rounds"));
+        assert!(prompt
+            .contains("\"security\", \"secret_exposure\", \"data_integrity\", \"correctness\""));
+        assert!(prompt.contains("evidence_note names the exact changed lines"));
+    }
+
+    #[test]
+    fn unlimited_rounds_keep_the_old_prompt() {
+        let prompt = prompt_for(6, 0, None);
+        assert!(!prompt.contains("## Review Round"));
+    }
+
+    #[test]
+    fn stack_context_gets_its_own_section() {
+        let prompt = prompt_for(0, 2, Some("This PR is part of a stack of pull requests."));
+        let section = prompt.find("## Stacked PR").expect("stack section");
+        let context = prompt.find("## Context").expect("context section");
+        assert!(
+            section < context,
+            "stack section comes before the truncatable context"
+        );
+        assert!(!prompt_for(0, 2, Some("  ")).contains("## Stacked PR"));
     }
 }

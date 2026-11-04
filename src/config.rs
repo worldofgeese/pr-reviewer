@@ -6,6 +6,8 @@ use std::str::FromStr;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::review::parser::FindingKind;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessKind {
@@ -172,6 +174,78 @@ pub struct DefaultsConfig {
     pub max_prompt_bytes: usize,
     #[serde(default = "default_true")]
     pub skip_docs_only: bool,
+    /// Review rounds that may post inline findings. Round 1 is the full
+    /// review, rounds 2..=N verify earlier findings, and later rounds report
+    /// new non-critical findings only as non-blocking notes. 0 = no limit.
+    #[serde(default = "default_max_review_cycles")]
+    pub max_review_cycles: u32,
+    /// Finding kinds that may still be posted inline, and request changes,
+    /// after the review-cycle limit (when blocking and backed by an
+    /// `evidence_note`).
+    #[serde(default = "default_critical_finding_kinds")]
+    pub critical_finding_kinds: Vec<FindingKind>,
+    /// Skip the review of a push that leaves the PR's own diff unchanged,
+    /// such as a rebase or a cascade from a stacked parent.
+    #[serde(default = "default_true")]
+    pub skip_unchanged_diff: bool,
+    /// Detect stacked PRs, tell the reviewer about the parent PR, and drop
+    /// findings that are already tracked on an ancestor PR.
+    #[serde(default = "default_true")]
+    pub stack_aware: bool,
+    /// Dismiss the bot's earlier REQUEST_CHANGES reviews once no blocking
+    /// finding is open. The bot never approves, so without this a change
+    /// request stays on the PR after its findings are fixed.
+    #[serde(default = "default_true")]
+    pub dismiss_stale_change_requests: bool,
+}
+
+/// Per-repo overrides for the review policy. Unset fields use `[defaults]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ReviewPolicyOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_review_cycles: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub critical_finding_kinds: Option<Vec<FindingKind>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_unchanged_diff: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_aware: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismiss_stale_change_requests: Option<bool>,
+}
+
+impl ReviewPolicyOverrides {
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// The effective review policy for one repo: per-repo override > `[defaults]`.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ReviewPolicy {
+    pub max_review_cycles: u32,
+    pub critical_finding_kinds: Vec<FindingKind>,
+    pub skip_unchanged_diff: bool,
+    pub stack_aware: bool,
+    pub dismiss_stale_change_requests: bool,
+}
+
+impl Default for ReviewPolicy {
+    fn default() -> Self {
+        DefaultsConfig::default().review_policy()
+    }
+}
+
+impl DefaultsConfig {
+    pub fn review_policy(&self) -> ReviewPolicy {
+        ReviewPolicy {
+            max_review_cycles: self.max_review_cycles,
+            critical_finding_kinds: self.critical_finding_kinds.clone(),
+            skip_unchanged_diff: self.skip_unchanged_diff,
+            stack_aware: self.stack_aware,
+            dismiss_stale_change_requests: self.dismiss_stale_change_requests,
+        }
+    }
 }
 
 /// Conditions that must be met for a workflow step to run.
@@ -248,6 +322,8 @@ pub struct RepoConfig {
     pub workflow: Vec<WorkflowStep>,
     #[serde(default)]
     pub auto_fix: AutoFixConfig,
+    #[serde(default, skip_serializing_if = "ReviewPolicyOverrides::is_empty")]
+    pub review_policy: ReviewPolicyOverrides,
 }
 
 /// Autonomous bug/security scan that can patch the managed clone and open a PR.
@@ -390,6 +466,19 @@ fn default_true() -> bool {
     true
 }
 
+fn default_max_review_cycles() -> u32 {
+    2
+}
+
+fn default_critical_finding_kinds() -> Vec<FindingKind> {
+    vec![
+        FindingKind::Security,
+        FindingKind::SecretExposure,
+        FindingKind::DataIntegrity,
+        FindingKind::Correctness,
+    ]
+}
+
 fn default_instruction_pr_min_distinct_prs() -> u32 {
     2
 }
@@ -468,6 +557,11 @@ impl Default for DefaultsConfig {
             dry_run: false,
             max_prompt_bytes: default_prompt_limit(),
             skip_docs_only: true,
+            max_review_cycles: default_max_review_cycles(),
+            critical_finding_kinds: default_critical_finding_kinds(),
+            skip_unchanged_diff: true,
+            stack_aware: true,
+            dismiss_stale_change_requests: true,
         }
     }
 }
@@ -525,6 +619,27 @@ impl RepoConfig {
 
     pub fn resolved_reasoning_effort(&self, config: &AppConfig) -> Option<ReasoningEffort> {
         self.reasoning_effort.or(config.harness.reasoning_effort)
+    }
+
+    pub fn resolved_review_policy(&self, config: &AppConfig) -> ReviewPolicy {
+        let defaults = config.defaults.review_policy();
+        let overrides = &self.review_policy;
+        ReviewPolicy {
+            max_review_cycles: overrides
+                .max_review_cycles
+                .unwrap_or(defaults.max_review_cycles),
+            critical_finding_kinds: overrides
+                .critical_finding_kinds
+                .clone()
+                .unwrap_or(defaults.critical_finding_kinds),
+            skip_unchanged_diff: overrides
+                .skip_unchanged_diff
+                .unwrap_or(defaults.skip_unchanged_diff),
+            stack_aware: overrides.stack_aware.unwrap_or(defaults.stack_aware),
+            dismiss_stale_change_requests: overrides
+                .dismiss_stale_change_requests
+                .unwrap_or(defaults.dismiss_stale_change_requests),
+        }
     }
 }
 
@@ -706,4 +821,90 @@ pub fn ensure_repo_path_exists(path: &Path) -> Result<()> {
         return Err(anyhow!("repo path does not exist: {}", path.display()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo(review_policy: ReviewPolicyOverrides) -> RepoConfig {
+        RepoConfig {
+            owner: "o".to_string(),
+            name: "r".to_string(),
+            local_path: None,
+            harness: None,
+            model: None,
+            reasoning_effort: None,
+            fork_policy: ForkPolicy::Ignore,
+            trusted_authors: vec![],
+            ignore_paths: vec![],
+            custom_instructions: None,
+            gitnexus: false,
+            workflow: vec![],
+            auto_fix: AutoFixConfig::default(),
+            review_policy,
+        }
+    }
+
+    #[test]
+    fn review_policy_defaults_apply_when_config_omits_them() {
+        let config: AppConfig = toml::from_str("[defaults]\nbot_name = \"bot\"\n").unwrap();
+        let policy = repo(ReviewPolicyOverrides::default()).resolved_review_policy(&config);
+        assert_eq!(policy.max_review_cycles, 2);
+        assert!(policy.skip_unchanged_diff);
+        assert!(policy.stack_aware);
+        assert!(policy.dismiss_stale_change_requests);
+        assert_eq!(
+            policy.critical_finding_kinds,
+            vec![
+                FindingKind::Security,
+                FindingKind::SecretExposure,
+                FindingKind::DataIntegrity,
+                FindingKind::Correctness,
+            ]
+        );
+    }
+
+    #[test]
+    fn per_repo_review_policy_overrides_defaults() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [defaults]
+            max_review_cycles = 3
+            stack_aware = false
+            critical_finding_kinds = ["security"]
+
+            [[repos]]
+            owner = "o"
+            name = "r"
+
+            [repos.review_policy]
+            max_review_cycles = 0
+            critical_finding_kinds = ["security", "data_integrity"]
+            "#,
+        )
+        .unwrap();
+        let policy = config.repos[0].resolved_review_policy(&config);
+        assert_eq!(policy.max_review_cycles, 0);
+        assert!(
+            !policy.stack_aware,
+            "unset per-repo field falls back to [defaults]"
+        );
+        assert_eq!(
+            policy.critical_finding_kinds,
+            vec![FindingKind::Security, FindingKind::DataIntegrity]
+        );
+    }
+
+    #[test]
+    fn empty_review_policy_overrides_are_not_serialized() {
+        let rendered = toml::to_string(&repo(ReviewPolicyOverrides::default())).unwrap();
+        assert!(!rendered.contains("review_policy"), "{rendered}");
+        let rendered = toml::to_string(&repo(ReviewPolicyOverrides {
+            max_review_cycles: Some(1),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(rendered.contains("max_review_cycles = 1"), "{rendered}");
+    }
 }

@@ -26,6 +26,11 @@ pub struct PrState {
     pub last_reviewed_sha: Option<String>,
     pub last_comment_check: Option<String>,
     pub review_count: i64,
+    /// Change fingerprint of the PR's own diff at `last_reviewed_sha`.
+    pub last_reviewed_diff_hash: Option<String>,
+    /// Per-file change fingerprints at `last_reviewed_sha`, as a JSON object
+    /// of path to hash.
+    pub last_reviewed_file_hashes: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -438,6 +443,8 @@ impl Database {
                 "TEXT NOT NULL DEFAULT 'correctness'",
             )?;
             ensure_column_exists(conn, "review_findings", "author", "TEXT")?;
+            ensure_column_exists(conn, "pr_state", "last_reviewed_diff_hash", "TEXT")?;
+            ensure_column_exists(conn, "pr_state", "last_reviewed_file_hashes", "TEXT")?;
             ensure_column_exists(conn, "review_findings", "recurrence_fingerprint", "TEXT")?;
             ensure_column_exists(conn, "review_findings", "posted_at", "TEXT")?;
             ensure_column_exists(
@@ -854,18 +861,43 @@ impl Database {
         self.run(move |conn| {
             let row = conn
                 .query_row(
-                    "SELECT last_reviewed_sha, last_comment_check, review_count FROM pr_state WHERE repo=?1 AND pr_number=?2",
+                    "SELECT last_reviewed_sha, last_comment_check, review_count, last_reviewed_diff_hash, last_reviewed_file_hashes FROM pr_state WHERE repo=?1 AND pr_number=?2",
                     params![repo, pr_number],
                     |r| {
                         Ok(PrState {
                             last_reviewed_sha: r.get(0)?,
                             last_comment_check: r.get(1)?,
                             review_count: r.get(2)?,
+                            last_reviewed_diff_hash: r.get(3)?,
+                            last_reviewed_file_hashes: r.get(4)?,
                         })
                     },
                 )
                 .optional()?;
             Ok(row)
+        })
+        .await
+    }
+
+    /// Records the change fingerprint (overall and per-file JSON) of the PR
+    /// diff that was just reviewed. Call after `upsert_pr_state` for the
+    /// same SHA.
+    pub async fn set_last_reviewed_fingerprint(
+        &self,
+        repo: &str,
+        pr_number: i64,
+        diff_hash: Option<&str>,
+        file_hashes_json: Option<&str>,
+    ) -> Result<()> {
+        let repo = repo.to_string();
+        let diff_hash = diff_hash.map(ToString::to_string);
+        let file_hashes_json = file_hashes_json.map(ToString::to_string);
+        self.run(move |conn| {
+            conn.execute(
+                "UPDATE pr_state SET last_reviewed_diff_hash=?3, last_reviewed_file_hashes=?4 WHERE repo=?1 AND pr_number=?2",
+                params![repo, pr_number, diff_hash, file_hashes_json],
+            )?;
+            Ok(())
         })
         .await
     }
@@ -2032,6 +2064,52 @@ mod tests {
 
         assert!(db.claim_review(dry_run_claim).await.expect("dry-run claim"));
         assert!(db.claim_review(live_claim).await.expect("live claim"));
+    }
+
+    #[tokio::test]
+    async fn pr_state_diff_hash_survives_migration_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.db");
+        {
+            let conn = Connection::open(&path).expect("open sqlite");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version(version) VALUES (1);
+                CREATE TABLE pr_state (
+                    repo TEXT NOT NULL,
+                    pr_number INTEGER NOT NULL,
+                    last_reviewed_sha TEXT,
+                    last_comment_check TEXT,
+                    review_count INTEGER DEFAULT 0,
+                    PRIMARY KEY (repo, pr_number)
+                );
+                INSERT INTO pr_state(repo, pr_number, last_reviewed_sha, review_count)
+                VALUES ('o/r', 7, 'sha-old', 3);
+                "#,
+            )
+            .expect("seed pre-fingerprint schema");
+        }
+
+        let db = Database::new(path).await.expect("migrate");
+        let before = db.get_pr_state("o/r", 7).await.unwrap().expect("row kept");
+        assert_eq!(before.last_reviewed_sha.as_deref(), Some("sha-old"));
+        assert_eq!(before.last_reviewed_diff_hash, None);
+
+        db.upsert_pr_state("o/r", 7, Some("sha-new"), None)
+            .await
+            .unwrap();
+        db.set_last_reviewed_fingerprint("o/r", 7, Some("fp-1"), Some(r#"{"a.rs":"h1"}"#))
+            .await
+            .unwrap();
+        let after = db.get_pr_state("o/r", 7).await.unwrap().unwrap();
+        assert_eq!(after.last_reviewed_sha.as_deref(), Some("sha-new"));
+        assert_eq!(after.last_reviewed_diff_hash.as_deref(), Some("fp-1"));
+        assert_eq!(
+            after.last_reviewed_file_hashes.as_deref(),
+            Some(r#"{"a.rs":"h1"}"#)
+        );
+        assert_eq!(after.review_count, 4);
     }
 
     #[tokio::test]

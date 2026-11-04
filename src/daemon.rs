@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use nix::sys::signal::{kill, Signal};
@@ -25,6 +25,8 @@ const RATE_LIMIT_TOTAL: u32 = 5000;
 const WORK_KIND_REVIEW_PR: &str = "review_pr";
 const WORK_KIND_RESPOND_TO_COMMAND: &str = "respond_to_command";
 const WORK_KIND_REPAIR_PR: &str = "repair_pr";
+/// How often to read the review threads of a reviewed PR for human answers.
+const HUMAN_ANSWER_CHECK_INTERVAL: Duration = Duration::from_secs(120);
 
 pub async fn start(
     config: AppConfig,
@@ -82,6 +84,12 @@ pub async fn start(
     // (or during the current one before we evaluate backoff) is captured once.
     let finalization_detected = Arc::new(AtomicBool::new(false));
     let auto_fix_detected = Arc::new(AtomicBool::new(false));
+
+    // The open PRs of each repo from its last full listing. GitHub answers
+    // 304 for an unchanged PR list, and resolving a review thread does not
+    // change it, so the thread check below needs its own copy.
+    let mut open_prs: HashMap<String, Vec<PullRequest>> = HashMap::new();
+    let mut human_answers_checked: HashMap<(String, u64), Instant> = HashMap::new();
 
     loop {
         while workers.try_join_next().is_some() {}
@@ -157,7 +165,13 @@ pub async fn start(
                 }
             }
 
-            let etag = db.get_repo_etag(&repo_name).await?;
+            // List in full once after start: the stored etag would answer 304
+            // and leave `open_prs` empty until the PR list changes.
+            let etag = if open_prs.contains_key(&repo_name) {
+                db.get_repo_etag(&repo_name).await?
+            } else {
+                None
+            };
             let pulls = github
                 .list_open_prs(&repo_cfg.owner, &repo_cfg.name, etag.as_deref())
                 .await;
@@ -186,6 +200,10 @@ pub async fn start(
                     // hit the safety cap, stay conservative and ask GitHub for the
                     // current state before archiving anything missing from the set.
                     let can_trust_open_set = complete;
+                    human_answers_checked.retain(|(repo, number), _| {
+                        repo != &repo_name || open_pr_numbers.contains(number)
+                    });
+                    open_prs.insert(repo_name.clone(), prs.clone());
                     for pr in prs {
                         let state = db.get_pr_state(&repo_name, pr.number as i64).await?;
                         let already = state.as_ref().and_then(|s| s.last_reviewed_sha.clone());
@@ -428,6 +446,38 @@ pub async fn start(
                             }
                         });
                     }
+                }
+            }
+
+            // A human who resolves or rebuts the bot's thread changes neither
+            // the head nor the PR list, so no review runs. Apply the answer
+            // here, so the bot's change request does not block until a push.
+            for pr in open_prs.get(&repo_name).into_iter().flatten() {
+                let key = (repo_name.clone(), pr.number);
+                if human_answers_checked
+                    .get(&key)
+                    .is_some_and(|at| at.elapsed() < HUMAN_ANSWER_CHECK_INTERVAL)
+                {
+                    continue;
+                }
+                let reviewed = db
+                    .get_pr_state(&repo_name, pr.number as i64)
+                    .await?
+                    .and_then(|state| state.last_reviewed_sha)
+                    .is_some_and(|sha| sha == pr.head.sha);
+                if !reviewed {
+                    // A review is due; it applies the answers itself.
+                    continue;
+                }
+                human_answers_checked.insert(key, Instant::now());
+                match engine.sync_human_answers(&repo_cfg, pr).await {
+                    Ok(changed) => changes_detected |= changed,
+                    Err(err) => tracing::warn!(
+                        repo = %repo_name,
+                        pr = pr.number,
+                        error = %err,
+                        "failed to check review threads for human answers"
+                    ),
                 }
             }
         }
