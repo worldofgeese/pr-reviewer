@@ -268,7 +268,7 @@ If duplicates are appearing:
 
 ### Review stuck in "in-progress" state after a crash
 
-The daemon sweeps stale claims, which are older than `harness.timeout_secs` plus 30 seconds, when it starts. To clear a stale or failed claim for one pull request at once, run the review again with `--force`:
+When it starts, the daemon drops stale claims, which are older than `harness.timeout_secs` plus 30 seconds, and puts their work items back in the queue. The next worker run then performs the review. To clear a stale or failed claim for one pull request at once, run the review again with `--force`:
 
 ```bash
 pr-reviewer review owner/repo#42 --force
