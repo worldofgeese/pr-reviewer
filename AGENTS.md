@@ -131,10 +131,12 @@ Cached `authenticated_user` at engine init. Falls back to live API call if cache
 Organised by the Diataxis framework; start at [docs/README.md](docs/README.md).
 
 - [docs/tutorials/](docs/tutorials/) — learning-oriented walkthroughs ([getting-started.md](docs/tutorials/getting-started.md))
+- [docs/how-to/respond-to-a-review.md](docs/how-to/respond-to-a-review.md) — fix, push back on or ask for a fix of a finding; review-cycle limit; stacked and fork PRs
 - [docs/how-to/run-as-a-service.md](docs/how-to/run-as-a-service.md) — launchd and systemd service files, passphrase env var handling, token setup, log management, health monitoring
 - [docs/how-to/back-up-and-upgrade.md](docs/how-to/back-up-and-upgrade.md) — backup, restore, upgrades
 - [docs/reference/cli.md](docs/reference/cli.md) — every command and flag
 - [docs/reference/configuration.md](docs/reference/configuration.md) — full config reference, multi-step workflows
+- [docs/reference/pull-request-commands.md](docs/reference/pull-request-commands.md) — bot commands, thread mentions, reply phrases, markers, labels
 - [docs/reference/environment.md](docs/reference/environment.md) — environment variables
 - [docs/reference/troubleshooting.md](docs/reference/troubleshooting.md) — token errors, rate limits, harness failures, daemon issues, GitNexus problems
 - [docs/explanation/how-a-review-works.md](docs/explanation/how-a-review-works.md) — review cycles, stacked PRs, fork policy, confidence scoring

@@ -1,6 +1,34 @@
 # How a review works
 
-How pr-reviewer decides what to review, what to post and what to keep quiet about. For the keys that control this, see the [configuration reference](../reference/configuration.md).
+How pr-reviewer decides what to review, what to post and what to keep quiet about. If you wrote a pull request and want to act on a review, see [Respond to a review](../how-to/respond-to-a-review.md). For the keys that control this, see the [configuration reference](../reference/configuration.md).
+
+---
+
+## What a review contains
+
+pr-reviewer reviews a pull request in a watched repository each time its head commit changes. A **finding** is one problem that a review cycle reports. A review shows a finding in one of two ways:
+
+- As an inline review thread on a line of the diff. A thread is a blocking finding or a warning. A blocking finding makes the review request changes.
+- As a **follow-up note** in the review body. A follow-up note cannot block the merge.
+
+The review body also holds a summary, a confidence line and a collapsed **Review metadata** section. The bot never approves a pull request.
+
+```mermaid
+flowchart TD
+    A[New head commit] --> B{Skip?}
+    B -->|"draft, docs only, fork PR under ignore,<br/>or same own changes as last review"| C[No review]
+    B -->|no| D[Review cycle N]
+    D --> E{N within<br/>max_review_cycles?}
+    E -->|yes| F["Findings as inline threads<br/>(cycle 1 full, later cycles verify)"]
+    E -->|no| G["New findings as follow-up notes<br/>(critical findings stay inline)"]
+    F --> H[Review posted]
+    G --> H
+    H --> I{"You answer a thread<br/>or push a fix"}
+    I -->|reply or resolve| J[Finding closed, no new review]
+    I -->|push a commit| A
+```
+
+The sections below explain each step of this diagram.
 
 ---
 
@@ -71,7 +99,7 @@ Limits:
 
 ## Fork policy
 
-Controls what happens when pr-reviewer encounters a PR from a fork.
+A **fork PR** has its head branch in a fork of the repository that it targets. The code in a fork PR is untrusted, so the fork policy of the repository controls what pr-reviewer does with it. As the author of a fork PR, you see no review at all under the default policy. See [Respond to a review](../how-to/respond-to-a-review.md#work-in-a-fork-pr).
 
 | Policy | Behavior |
 |--------|----------|
