@@ -6,7 +6,9 @@ pr-reviewer is a self-hosted daemon that reviews GitHub pull requests with a loc
 
 ### I write pull requests that pr-reviewer reviews
 
-Read [How a review works](explanation/how-a-review-works.md). It explains review cycles, follow-up notes, stacked PRs, fork PRs and confidence.
+1. Read [How a review works](explanation/how-a-review-works.md). It explains review cycles, findings, follow-up notes, stacked PRs and fork PRs.
+2. Follow [Respond to a review](how-to/respond-to-a-review.md) to fix a finding, push back on it, ask the bot for a fix and get a new review.
+3. Look up the exact words the bot reads in [Pull request commands and labels](reference/pull-request-commands.md).
 
 ### I run pr-reviewer
 
@@ -28,10 +30,12 @@ Read [How a review works](explanation/how-a-review-works.md). It explains review
 | Kind | Page |
 |------|------|
 | Tutorial | [Run your first review](tutorials/getting-started.md) |
+| How-to guide | [Respond to a review](how-to/respond-to-a-review.md) |
 | How-to guide | [Run as a service](how-to/run-as-a-service.md) |
 | How-to guide | [Back up and upgrade](how-to/back-up-and-upgrade.md) |
 | Reference | [CLI](reference/cli.md) |
 | Reference | [Configuration](reference/configuration.md) |
+| Reference | [Pull request commands and labels](reference/pull-request-commands.md) |
 | Reference | [Environment variables](reference/environment.md) |
 | Reference | [Troubleshooting](reference/troubleshooting.md) |
 | Explanation | [How a review works](explanation/how-a-review-works.md) |
