@@ -4173,7 +4173,7 @@ fn pr_reviewer_project_url() -> &'static str {
 fn resolve_project_url(configured: &'static str) -> &'static str {
     let trimmed = configured.trim();
     if trimmed.is_empty() {
-        "https://github.com/NicholaiVogel/pr-reviewer"
+        "https://github.com/worldofgeese/pr-reviewer"
     } else {
         trimmed
     }
@@ -4504,9 +4504,9 @@ mod tests {
         finding_key, infer_pr_focus, line_is_authored_by_bot, login_matches_bot,
         looks_like_harness_error_output, looks_like_harness_transport_output,
         looks_like_reintroduction, normalize_in_progress_comment, normalize_summary_output,
-        reconcile_finding_ledger, resolve_project_url, should_suppress_finding,
-        truncate_github_comment_body, FindingStatus, PendingFinding, ReviewMemory,
-        GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
+        pr_reviewer_project_url, reconcile_finding_ledger, resolve_project_url,
+        should_suppress_finding, truncate_github_comment_body, FindingStatus, PendingFinding,
+        ReviewMemory, GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
     };
 
     fn test_user(login: &str) -> User {
@@ -4959,7 +4959,15 @@ Reviewed the archive flow.
     fn project_url_uses_fallback_when_empty() {
         assert_eq!(
             resolve_project_url(""),
-            "https://github.com/NicholaiVogel/pr-reviewer"
+            "https://github.com/worldofgeese/pr-reviewer"
+        );
+    }
+
+    #[test]
+    fn project_url_defaults_to_maintained_repository() {
+        assert_eq!(
+            pr_reviewer_project_url(),
+            "https://github.com/worldofgeese/pr-reviewer"
         );
     }
 

@@ -9,7 +9,7 @@ This repo uses two tools, each with one job:
   follow-up work. Run `bd prime` at the start of a session.
 
 This repo is a GitHub fork, so `gh` can default to upstream
-(`NicholaiVogel/pr-reviewer`). Run `gh repo set-default worldofgeese/pr-reviewer`
+(the upstream in `GLOSSARY.md`). Run `gh repo set-default worldofgeese/pr-reviewer`
 once per clone, and pass `-R worldofgeese/pr-reviewer` in scripts. Never file
 issues, comment or open pull requests upstream (ADR-0001).
 

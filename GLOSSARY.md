@@ -13,7 +13,7 @@ This project, maintained at `worldofgeese/pr-reviewer`.
 _Avoid_: the fork, our fork
 
 **Upstream**:
-The original project, `NicholaiVogel/pr-reviewer`, from which pr-reviewer was
+The original project (named in ADR-0001), from which pr-reviewer was
 forked.
 _Avoid_: origin, parent, the original
 
