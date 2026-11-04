@@ -20,10 +20,11 @@ pr-reviewer is a self-hosted daemon that reviews GitHub pull requests with a loc
 
 ### I maintain or contribute to pr-reviewer
 
-- [CONTRIBUTING.md](../CONTRIBUTING.md) explains how to build, test and submit changes.
-- [AGENTS.md](../AGENTS.md) describes the architecture and conventions.
-- [GLOSSARY.md](../GLOSSARY.md) fixes the words that the code and docs use.
-- [docs/adr/](adr/) holds the architecture decision records, such as [ADR-0001](adr/0001-maintain-a-hard-fork.md).
+1. [Contribute a change](how-to/contribute-a-change.md) from clone to release: issues, triage labels, tests, the pull request template and merge commits.
+2. [Bring in an upstream change](how-to/bring-in-an-upstream-change.md) with a cherry-pick, as [ADR-0001](adr/0001-maintain-a-hard-fork.md) requires.
+3. Read the [security model](explanation/security-model.md) before you touch tokens, clones or the AI CLI.
+4. [AGENTS.md](../AGENTS.md) describes the architecture and conventions, and [GLOSSARY.md](../GLOSSARY.md) fixes the words that the code and docs use.
+5. [docs/adr/](adr/) holds the architecture decision records.
 
 ## Contents
 
@@ -33,9 +34,12 @@ pr-reviewer is a self-hosted daemon that reviews GitHub pull requests with a loc
 | How-to guide | [Respond to a review](how-to/respond-to-a-review.md) |
 | How-to guide | [Run as a service](how-to/run-as-a-service.md) |
 | How-to guide | [Back up and upgrade](how-to/back-up-and-upgrade.md) |
+| How-to guide | [Contribute a change](how-to/contribute-a-change.md) |
+| How-to guide | [Bring in an upstream change](how-to/bring-in-an-upstream-change.md) |
 | Reference | [CLI](reference/cli.md) |
 | Reference | [Configuration](reference/configuration.md) |
 | Reference | [Pull request commands and labels](reference/pull-request-commands.md) |
 | Reference | [Environment variables](reference/environment.md) |
 | Reference | [Troubleshooting](reference/troubleshooting.md) |
 | Explanation | [How a review works](explanation/how-a-review-works.md) |
+| Explanation | [Security model](explanation/security-model.md) |

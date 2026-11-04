@@ -10,169 +10,34 @@
 
 ---
 
-Watches your GitHub repositories for pull requests, spawns a local AI coding CLI to review them, and posts structured comments back to GitHub automatically.
+pr-reviewer watches your GitHub repositories for pull requests, starts a local AI coding CLI to review each one, and posts the review back to GitHub. It needs no API keys. It uses the subscription of the CLI that you already have: Claude Code, OpenCode or Codex.
 
-No API keys required -- pr-reviewer uses your existing CLI subscriptions (Claude Code, OpenCode, Codex) instead of calling AI APIs directly.
+- **Review cycles with a limit.** After a set number of review cycles, new findings become follow-up notes that do not block the merge.
+- **Stacked PRs.** A rebase of a stack does not start new reviews.
+- **Your harness, your model.** Choose the AI CLI and the model for each repository.
+- **Protected secrets.** The token is encrypted at rest, and the AI CLI gets a scrubbed environment. See the [security model](docs/explanation/security-model.md).
+- **Idempotent.** A restart never posts a review twice.
 
-## How it works
+## Install
 
-1. You configure which repos to watch and which CLI harness to use
-2. The daemon polls GitHub for new or updated pull requests
-3. For each PR, it assembles context (diff, changed files, optional GitNexus impact analysis)
-4. It spawns your chosen CLI tool with a review prompt
-5. The response is parsed into structured comments and posted as a GitHub PR review
-6. If someone replies to a review comment, the daemon responds in-thread
-
-## Features
-
-- **Multi-harness support** -- Claude Code, OpenCode, Codex, or any CLI that accepts a prompt
-- **No API keys** -- uses your existing Pro/Max subscription through the CLI
-- **Multi-repo** -- watch as many repos as you want, each with its own harness and model
-- **GitNexus integration** -- optional codebase indexing for impact analysis and call chain context
-- **Safety first** -- fork policy enforcement, path traversal protection, environment scrubbing, sandboxed execution
-- **Idempotent** -- deduplicated reviews with atomic claim locks, no double-posting on restarts
-- **Adaptive polling** -- ETag caching, backoff, jitter, and rate budget tracking
-- **CLI-first** -- every setting is controllable via CLI commands, designed for agent management
-- **Signet compatible** -- runs with `SIGNET_NO_HOOKS=1` to avoid memory pollution and statistical bias
-- **Dry-run mode** -- log reviews without posting to GitHub
-
-## Prerequisites
-
-- **Rust toolchain** -- install via [rustup](https://rustup.rs/)
-- **GitHub Personal Access Token** -- fine-grained PAT with `pull_requests:read+write` and `contents:read` scopes, or a classic PAT with `repo` scope
-- **At least one AI CLI tool** installed and authenticated:
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) -- requires a Pro/Max subscription
-  - [OpenCode](https://github.com/opencode-ai/opencode) (`opencode`)
-  - [Codex](https://github.com/openai/codex) (`codex`)
-- **GitNexus** (optional) -- `npm install -g gitnexus` or use `npx gitnexus`. Enriches reviews with codebase impact analysis
-
-## Installation
+You need a [Rust toolchain](https://rustup.rs/), a GitHub token and at least one AI CLI that you have signed in to. Install the released version:
 
 ```bash
-# one-liner (review the script first, or use the clone method below)
-curl -sSf https://raw.githubusercontent.com/worldofgeese/pr-reviewer/main/install.sh -o install.sh
-less install.sh          # inspect before running
-bash install.sh
+cargo install --git https://github.com/worldofgeese/pr-reviewer --tag v0.2.0 --locked
 ```
 
-Or from a clone:
-
-```bash
-git clone https://github.com/worldofgeese/pr-reviewer.git
-cd pr-reviewer
-./install.sh
-```
-
-The install script checks prerequisites, builds from source, runs `pr-reviewer init`, and audits your runtime dependencies. Run `./install.sh --help` for options.
-
-If you upgraded from an older install location and your current shell still says `pr-reviewer` is missing, run `hash -r` once to clear Bash's cached command path.
-
-## Getting started
-
-Follow the [getting started tutorial](docs/tutorials/getting-started.md): initialize, set your GitHub token, add a repository, run a dry-run review, and start the daemon.
-
-## Configuration
-
-Config lives at `~/.config/pr-reviewer/config.toml`. All settings can be managed via CLI:
-
-```bash
-pr-reviewer config list                        # show all config
-pr-reviewer config set harness.default codex   # change default harness
-pr-reviewer config set harness.model gpt-5.4
-pr-reviewer config set harness.reasoning_effort low
-pr-reviewer config get daemon.poll_interval_secs
-```
-
-See [config.example.toml](config.example.toml) for the full configuration reference.
-
-### Per-repo overrides
-
-Each repo can override the global harness, model, fork policy, and review instructions:
-
-```toml
-[[repos]]
-owner = "nicholai"
-name = "openmarketui"
-# local_path is optional — omit to use auto-managed clone at ~/.config/pr-reviewer/repos/
-# local_path = "/mnt/work/dev/openmarketui"
-harness = "codex"
-model = "gpt-5.4"
-reasoning_effort = "low"
-fork_policy = "ignore"
-ignore_paths = ["*.lock", "dist/**"]
-custom_instructions = "This project uses a custom ORM. Watch for SQL injection."
-gitnexus = true
-```
+Then follow the [first review tutorial](docs/tutorials/getting-started.md). It takes about 15 minutes and ends with a real review on a repository that you can throw away.
 
 ## Documentation
 
-Start at the [documentation index](docs/README.md).
+Start at the [documentation index](docs/README.md). It routes you by role.
 
-- [Getting started tutorial](docs/tutorials/getting-started.md)
-- [Run as a service](docs/how-to/run-as-a-service.md) — systemd, log management, production setup
-- [Back up and upgrade](docs/how-to/back-up-and-upgrade.md)
-- [CLI reference](docs/reference/cli.md) — every command and flag
-- [Configuration reference](docs/reference/configuration.md) — all config options
-- [Environment variables](docs/reference/environment.md)
-- [Troubleshooting](docs/reference/troubleshooting.md) — diagnosing common errors
-- [How a review works](docs/explanation/how-a-review-works.md) — review cycles, stacked PRs, fork policy, confidence
+- **You write pull requests:** [How a review works](docs/explanation/how-a-review-works.md)
+- **You run pr-reviewer:** [Tutorial](docs/tutorials/getting-started.md), [run as a service](docs/how-to/run-as-a-service.md), [back up and upgrade](docs/how-to/back-up-and-upgrade.md), [CLI](docs/reference/cli.md), [configuration](docs/reference/configuration.md), [environment variables](docs/reference/environment.md) and [troubleshooting](docs/reference/troubleshooting.md)
+- **You change pr-reviewer:** [Contribute a change](docs/how-to/contribute-a-change.md), [bring in an upstream change](docs/how-to/bring-in-an-upstream-change.md) and the [security model](docs/explanation/security-model.md)
 
-## CLI reference
-
-See the [CLI reference](docs/reference/cli.md).
-
-## Supported harnesses
-
-| Harness | CLI command | Model flag |
-|---------|-------------|------------|
-| claude-code | `claude --model <m> --dangerously-skip-permissions -p "..."` | `--model` |
-| opencode | `opencode run --model <m> --format json "..."` | `--model` |
-| codex | `codex exec --model <m> --skip-git-repo-check --json "..."` | `--model` |
-
-Model resolution: per-repo config > global `harness.model` > harness default.
-
-## Safety model
-
-pr-reviewer runs AI tools against potentially untrusted code. The safety model includes:
-
-- **Sandboxed execution**: harnesses run in a temporary directory, not the repo root
-- **Managed repo clones**: repos are auto-cloned to `~/.config/pr-reviewer/repos/`, keeping your working repos isolated from review agents
-- **Encrypted token storage**: GitHub tokens encrypted at rest with double-layer AES-256-GCM (machine-bound keyfile + passphrase/machine-derived key)
-- **Environment scrubbing**: `HOME`, `SSH_AUTH_SOCK`, `GH_TOKEN`, `AWS_*`, `ANTHROPIC_API_KEY`, and other sensitive variables are stripped from the harness environment
-- **Fork policy**: configurable per-repo (`ignore`, `limited`, `full`) with trusted author allowlists
-- **Path validation**: canonicalization and containment checks reject traversal attacks and symlink escapes
-- **Signet bypass**: `SIGNET_NO_HOOKS=1` prevents hook invocation in spawned processes
-- **Optional Signet secrets**: tokens can be stored in Signet's encrypted secret store for unified credential management
-
-## Token security
-
-GitHub tokens are never stored in plain text by default. The `set-token` command encrypts tokens with two independent AES-256-GCM layers:
-
-1. **Machine-bound key**: a random 32-byte key stored at `~/.config/pr-reviewer/keyfile` (permissions `0600`) -- this is the primary protection layer; anyone who can read this file can decrypt the token
-2. **Passphrase or machine identity**: if `--passphrase` is used, the inner layer is derived via Argon2id from your passphrase, providing strong protection even if the keyfile is compromised. Without `--passphrase`, the inner layer uses `/etc/machine-id` + username (world-readable inputs, so the keyfile is your real security boundary)
-
-Token resolution order:
-1. Signet secret store (if Signet is installed and has the secret)
-2. Encrypted config (`github.encrypted_token`)
-3. Plain-text config (`github.token`) -- legacy, emits a warning
-4. `GITHUB_TOKEN` environment variable
-
-For daemon mode with passphrase-protected tokens, set `PR_REVIEWER_PASSPHRASE` as an environment variable.
-
-Run `pr-reviewer config token-status` to see which source is active.
-
-## GitNexus integration
-
-If [GitNexus](https://github.com/abhigyanpatwari/GitNexus) is installed and a repo has been indexed (`.gitnexus/` directory exists), pr-reviewer enriches review context with:
-
-- Impact analysis (blast radius of changed symbols)
-- Call chain tracing (upstream/downstream dependencies)
-- Community context (which functional area of the codebase is affected)
-
-To index a repo: `pr-reviewer index owner/repo` or `gitnexus analyze /path/to/repo`.
+To report a bug, [open an issue](https://github.com/worldofgeese/pr-reviewer/issues).
 
 ## License
 
-[MIT](LICENSE)
-
-Forked from [NicholaiVogel/pr-reviewer](https://github.com/NicholaiVogel/pr-reviewer).
+[MIT](LICENSE). pr-reviewer is a hard fork of [NicholaiVogel/pr-reviewer](https://github.com/NicholaiVogel/pr-reviewer). See [ADR-0001](docs/adr/0001-maintain-a-hard-fork.md).

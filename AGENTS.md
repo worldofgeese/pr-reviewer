@@ -10,7 +10,7 @@ src/
 ├── daemon.rs            # Polling loop with ETag caching, adaptive backoff, jitter, rate budgeting
 ├── config.rs            # TOML config (serde) at ~/.config/pr-reviewer/config.toml, CLI config commands
 ├── repo_manager.rs      # Managed clone lifecycle: clone, fetch, purge, cleanup under ~/.config/pr-reviewer/repos/
-├── safety.rs            # Path canonicalization, symlink rejection, fork policy evaluation
+├── safety.rs            # Fork policy evaluation
 ├── token/
 │   ├── mod.rs           # Token resolution chain: signet → encrypted → plain text → env var
 │   ├── crypto.rs        # Double-layer AES-256-GCM encryption (keyfile + passphrase/machine-derived)
@@ -22,7 +22,6 @@ src/
 │   └── pr.rs            # PR listing, diff fetching (thin wrappers around client)
 ├── context/
 │   ├── diff_parser.rs   # Unified diff → Vec<FileDiff> with line→position mapping for GitHub API
-│   ├── file_reader.rs   # Safe file reading with path validation and containment checks
 │   ├── retriever.rs     # Assembles prompt context: diff + file contents + GitNexus + prior reviews
 │   └── gitnexus.rs      # Spawns `gitnexus query` CLI for impact analysis (reads stderr — see note below)
 ├── harness/
@@ -108,9 +107,7 @@ Cached `authenticated_user` at engine init. Falls back to live API call if cache
 
 ## Safety Rules
 
-- Never checkout the PR branch locally — context is assembled from GitHub API responses
-- All file paths canonicalized and checked for containment within repo root
-- Symlinks resolved and rejected if target is outside repo
+- Never checkout the PR branch locally — context is assembled from GitHub API responses (see [the security model](docs/explanation/security-model.md))
 - Fork PRs handled per-repo policy: `ignore` (default), `limited` (diff only), `full` (trusted orgs)
 - Environment scrubbed before spawning any harness process
 - GitHub tokens encrypted at rest with double-layer AES-256-GCM; never stored in plain text by default
@@ -134,11 +131,14 @@ Organised by the Diataxis framework; start at [docs/README.md](docs/README.md).
 - [docs/how-to/respond-to-a-review.md](docs/how-to/respond-to-a-review.md) — fix, push back on or ask for a fix of a finding; review-cycle limit; stacked and fork PRs
 - [docs/how-to/run-as-a-service.md](docs/how-to/run-as-a-service.md) — launchd and systemd service files, passphrase env var handling, token setup, log management, health monitoring
 - [docs/how-to/back-up-and-upgrade.md](docs/how-to/back-up-and-upgrade.md) — backup, restore, upgrades
+- [docs/how-to/contribute-a-change.md](docs/how-to/contribute-a-change.md) — clone, intake and triage, test first, pull request template, merge commits, release
+- [docs/how-to/bring-in-an-upstream-change.md](docs/how-to/bring-in-an-upstream-change.md) — cherry-pick from upstream (ADR-0001)
 - [docs/reference/cli.md](docs/reference/cli.md) — every command and flag
 - [docs/reference/configuration.md](docs/reference/configuration.md) — full config reference, multi-step workflows
 - [docs/reference/pull-request-commands.md](docs/reference/pull-request-commands.md) — bot commands, thread mentions, reply phrases, markers, labels
 - [docs/reference/environment.md](docs/reference/environment.md) — environment variables
 - [docs/reference/troubleshooting.md](docs/reference/troubleshooting.md) — token errors, rate limits, harness failures, daemon issues, GitNexus problems
+- [docs/explanation/security-model.md](docs/explanation/security-model.md) — token encryption, managed clones, environment scrubbing, limits
 - [docs/explanation/how-a-review-works.md](docs/explanation/how-a-review-works.md) — review cycles, stacked PRs, fork policy, confidence scoring
 - [docs/adr/](docs/adr/) — architecture decision records
 
