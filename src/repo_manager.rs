@@ -43,6 +43,15 @@ pub fn resolve_local_path(repo_cfg: &RepoConfig) -> Result<PathBuf> {
     }
 }
 
+/// GitHub's git smart-HTTP endpoint does not accept `Authorization: Bearer`
+/// for personal-access or OAuth tokens and answers "invalid credentials"; it
+/// wants HTTP Basic with the token as the password.
+fn git_basic_auth_header(token: &str) -> String {
+    use base64::Engine as _;
+    let creds = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+    format!("Authorization: Basic {creds}")
+}
+
 /// Clones a repo into the managed directory if not already present.
 /// Uses HTTPS with the token passed via http.extraHeader to avoid embedding it in .git/config.
 /// Returns the path to the clone.
@@ -76,10 +85,7 @@ pub async fn ensure_cloned(owner: &str, name: &str, token: &str) -> Result<PathB
         // Pass auth via env vars instead of -c args to avoid leaking token in /proc/pid/cmdline
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-        .env(
-            "GIT_CONFIG_VALUE_0",
-            format!("Authorization: Bearer {token}"),
-        )
+        .env("GIT_CONFIG_VALUE_0", git_basic_auth_header(token))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -311,10 +317,7 @@ async fn run_git_with_auth(repo_path: &Path, token: &str, args: &[&str]) -> Resu
         .current_dir(repo_path)
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-        .env(
-            "GIT_CONFIG_VALUE_0",
-            format!("Authorization: Bearer {token}"),
-        )
+        .env("GIT_CONFIG_VALUE_0", git_basic_auth_header(token))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -427,11 +430,21 @@ pub async fn cleanup(active_repos: &[RepoConfig]) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        changed_file_paths, clean_worktree, fetch_latest, fetch_latest_managed, parse_status_paths,
+        changed_file_paths, clean_worktree, fetch_latest, fetch_latest_managed,
+        git_basic_auth_header, parse_status_paths,
     };
     use std::fs;
     use std::path::Path;
     use tokio::process::Command;
+
+    #[test]
+    fn git_auth_header_is_basic_with_x_access_token() {
+        // base64("x-access-token:ghp_abc123")
+        assert_eq!(
+            git_basic_auth_header("ghp_abc123"),
+            "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hwX2FiYzEyMw=="
+        );
+    }
 
     #[tokio::test]
     async fn clean_worktree_removes_untracked_and_ignored_files() {
