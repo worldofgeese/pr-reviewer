@@ -502,7 +502,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
     );
     assert!(run
         .prompt(2)
-        .contains("This is review round 2 of up to 2 rounds"));
+        .contains("This is review cycle 2 of up to 2 review cycles"));
 
     // Round 3: a rebase. Line numbers, the index line and a farther context
     // line change; the PR's own change does not. No review, no round used.
@@ -609,13 +609,13 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         "{body}"
     );
     assert!(
-        body.contains("review round 3 and inline findings stop after round 2"),
+        body.contains("review cycle 3 and inline findings stop after review cycle 2"),
         "{body}"
     );
     assert!(body.contains(BOUND) && body.contains(README), "{body}");
     assert!(run
         .prompt(3)
-        .contains("after the limit of 2 rounds with inline findings"));
+        .contains("after the limit of 2 review cycles with inline findings"));
 }
 
 #[tokio::test]

@@ -174,8 +174,8 @@ pub struct DefaultsConfig {
     pub max_prompt_bytes: usize,
     #[serde(default = "default_true")]
     pub skip_docs_only: bool,
-    /// Review rounds that may post inline findings. Round 1 is the full
-    /// review, rounds 2..=N verify earlier findings, and later rounds report
+    /// Review cycles that may post inline findings. Review cycle 1 is the full
+    /// review, cycles 2..=N verify earlier findings, and later cycles report
     /// new non-critical findings only as non-blocking notes. 0 = no limit.
     #[serde(default = "default_max_review_cycles")]
     pub max_review_cycles: u32,

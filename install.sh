@@ -511,7 +511,7 @@ setup_systemd() {
         echo
         info "1. Write the unit file to /etc/systemd/system/pr-reviewer.service"
         info "2. Create /etc/pr-reviewer/secrets with PR_REVIEWER_PASSPHRASE"
-        info "3. See docs/deployment.md for the full template"
+        info "3. See docs/how-to/run-as-a-service.md for the full template"
         return 0
     fi
 
@@ -621,7 +621,7 @@ print_next_steps() {
   4. Start the daemon:
      pr-reviewer start
 
-  ${DIM}Docs: docs/configuration.md, docs/troubleshooting.md, docs/deployment.md${RESET}
+  ${DIM}Docs: docs/README.md${RESET}
 
 EOF
 }

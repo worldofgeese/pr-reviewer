@@ -1,6 +1,6 @@
-# Deployment
+# Run pr-reviewer as a service
 
-How to run pr-reviewer reliably in production — as a systemd service, with secure token handling, proper logging, and a strategy for backups and upgrades.
+How to run pr-reviewer reliably in production — as a systemd service, with secure token handling and proper logging. For backups and upgrades, see [Back up and upgrade](back-up-and-upgrade.md). For the variables the daemon reads, see the [environment reference](../reference/environment.md).
 
 ---
 
@@ -74,24 +74,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable pr-reviewer
 sudo systemctl start pr-reviewer
 sudo systemctl status pr-reviewer
-```
-
----
-
-## Environment variable reference
-
-| Variable | Description |
-|----------|-------------|
-| `PR_REVIEWER_PASSPHRASE` | Passphrase for decrypting tokens stored with `--passphrase`. Required if token was encrypted with a passphrase. |
-| `GITHUB_TOKEN` | Fallback token source if no encrypted token is configured. Lowest priority in the resolution chain. |
-| `RUST_LOG` | Log level filter. Values: `error`, `warn`, `info`, `debug`, `trace`. Default: `error`. Use `info` for production, `debug` for diagnosis. |
-| `SIGNET_NO_HOOKS` | Set to `1` to disable Signet hook invocation. pr-reviewer sets this automatically in spawned harness environments. |
-
-For fine-grained log filtering:
-
-```bash
-# Log only pr-reviewer's own output at debug, everything else at warn
-RUST_LOG=warn,pr_reviewer=debug pr-reviewer start
 ```
 
 ---
@@ -185,67 +167,3 @@ Things to watch for in logs:
 - `ERROR: harness timeout` — review pipeline failing; check harness auth or increase `timeout_secs`
 - `WARN: failed to post review, retrying as COMMENT` — GitHub position validation issue; harmless, review still posts
 - `ERROR: token decryption failed` — passphrase mismatch or corrupted keyfile
-
----
-
-## State backup and restore
-
-The state that matters:
-
-| File | Description |
-|------|-------------|
-| `~/.config/pr-reviewer/config.toml` | All configuration including repo list |
-| `~/.config/pr-reviewer/state.db` | SQLite database: review log, PR state, daemon status |
-| `~/.config/pr-reviewer/keyfile` | 32-byte AES key for token decryption. **Critical — without this, encrypted tokens cannot be decrypted** |
-
-Back up all three together:
-
-```bash
-tar czf pr-reviewer-backup-$(date +%Y%m%d).tar.gz \
-  -C "$HOME" \
-  .config/pr-reviewer/config.toml \
-  .config/pr-reviewer/state.db \
-  .config/pr-reviewer/keyfile
-```
-
-Store the backup somewhere the passphrase is not also stored. If the keyfile is backed up and the backup is compromised, the token is only protected by the passphrase (if `--passphrase` was used).
-
-### Restore
-
-```bash
-# Stop the daemon first
-pr-reviewer stop
-
-# Restore files
-tar xzf pr-reviewer-backup-20260315.tar.gz -C "$HOME"
-
-# Restart
-pr-reviewer start --daemon
-```
-
-If restoring to a new machine, the keyfile must match what was used to encrypt the token. The keyfile is machine-specific — if you lose it, re-run `pr-reviewer config set-token` to re-encrypt with the new machine's keyfile.
-
----
-
-## Upgrading
-
-```bash
-# Stop the daemon
-pr-reviewer stop
-
-# Pull latest and rebuild
-cd /path/to/pr-reviewer
-git pull
-cargo install --path .
-
-# Schema migrations run automatically on next startup
-pr-reviewer start --daemon
-```
-
-The database schema is versioned with a `schema_version` table and migrations apply automatically on startup. There is no manual migration step.
-
-If something goes wrong after an upgrade:
-
-1. Check `RUST_LOG=debug pr-reviewer status` for startup errors
-2. Roll back: `git checkout <previous-tag> && cargo install --path .`
-3. The database format is backward-compatible across patch versions; major version upgrades may require a migration note in the release

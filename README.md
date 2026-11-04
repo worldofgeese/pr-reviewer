@@ -69,73 +69,7 @@ If you upgraded from an older install location and your current shell still says
 
 ## Getting started
 
-### 1. Initialize
-
-```bash
-pr-reviewer init
-```
-
-This creates `~/.config/pr-reviewer/config.toml` and the SQLite state database.
-
-### 2. Set your GitHub token
-
-```bash
-# encrypt and store (prompted for token + optional passphrase)
-pr-reviewer config set-token --passphrase
-
-# or pipe from stdin
-echo "ghp_..." | pr-reviewer config set-token --stdin
-
-# or store in Signet (if installed)
-pr-reviewer config set-token --signet
-
-# check what's configured
-pr-reviewer config token-status
-```
-
-### 3. Add a repository
-
-```bash
-# auto-clones to ~/.config/pr-reviewer/repos/ (recommended)
-pr-reviewer add owner/repo \
-  --harness claude-code \
-  --model claude-sonnet-4-6
-
-# or point to an existing local clone
-pr-reviewer add owner/repo --path /path/to/local/clone
-```
-
-If GitNexus is installed, this automatically runs `gitnexus analyze` to index the repo.
-
-### 4. Test with a dry run
-
-```bash
-pr-reviewer review owner/repo#42 --dry-run
-pr-reviewer review owner/repo#42 --dry-run --harness codex --model gpt-5.4 --reasoning-effort low
-```
-
-This runs the full review pipeline but logs the output instead of posting to GitHub.
-
-### 5. Review for real
-
-```bash
-pr-reviewer review owner/repo#42
-```
-
-### 6. Start the daemon
-
-```bash
-# foreground (see logs in terminal)
-pr-reviewer start
-
-# background (writes PID file, stop with `pr-reviewer stop`)
-pr-reviewer start --daemon
-
-# check status
-pr-reviewer status
-```
-
-The daemon polls GitHub for new/updated PRs and automatically reviews them. It uses ETag caching and adaptive backoff to stay well within GitHub's rate limits.
+Follow the [getting started tutorial](docs/tutorials/getting-started.md): initialize, set your GitHub token, add a repository, run a dry-run review, and start the daemon.
 
 ## Configuration
 
@@ -172,141 +106,20 @@ gitnexus = true
 
 ## Documentation
 
-- [Troubleshooting](docs/troubleshooting.md) — diagnosing common errors
-- [Deployment](docs/deployment.md) — systemd, log management, production setup
-- [Configuration reference](docs/configuration.md) — all config options explained
+Start at the [documentation index](docs/README.md).
+
+- [Getting started tutorial](docs/tutorials/getting-started.md)
+- [Run as a service](docs/how-to/run-as-a-service.md) — systemd, log management, production setup
+- [Back up and upgrade](docs/how-to/back-up-and-upgrade.md)
+- [CLI reference](docs/reference/cli.md) — every command and flag
+- [Configuration reference](docs/reference/configuration.md) — all config options
+- [Environment variables](docs/reference/environment.md)
+- [Troubleshooting](docs/reference/troubleshooting.md) — diagnosing common errors
+- [How a review works](docs/explanation/how-a-review-works.md) — review cycles, stacked PRs, fork policy, confidence
 
 ## CLI reference
 
-```
-pr-reviewer <COMMAND> [OPTIONS]
-```
-
-### Global help
-```bash
-pr-reviewer --help
-pr-reviewer <command> --help
-```
-
-### `init`
-```bash
-pr-reviewer init
-```
-Creates config and SQLite state in `~/.config/pr-reviewer/`.
-
-### `add`
-```bash
-# auto-clones to managed directory
-pr-reviewer add <owner/repo> \
-  [--harness claude-code|opencode|codex] \
-  [--model <model>] \
-  [--fork-policy ignore|limited|full]
-
-# or use an existing local clone
-pr-reviewer add <owner/repo> --path <local_path> [...]
-
-pr-reviewer add --scan <directory>
-pr-reviewer add --org <org>   # currently not implemented
-```
-
-### `remove`
-```bash
-pr-reviewer remove <owner/repo>
-pr-reviewer remove <owner/repo> --purge   # also deletes managed clone
-```
-
-### `cleanup`
-```bash
-pr-reviewer cleanup   # removes orphaned managed clones
-```
-
-### `list`
-```bash
-pr-reviewer list
-```
-
-### `index`
-```bash
-pr-reviewer index <owner/repo>
-pr-reviewer index --all
-```
-Runs `gitnexus analyze` for the target repo(s).
-
-### `review`
-```bash
-pr-reviewer review <owner/repo>#<pr_number> \
-  [--dry-run] \
-  [--harness claude-code|opencode|codex] \
-  [--model <model>] \
-  [--reasoning-effort none|low|medium|high|xhigh] \
-  [--force] \
-  [--rerun-completed]
-```
-`--force` clears stale or failed local claims for the exact review mode. `--rerun-completed` is the operator escape hatch for dogfooding: it clears a completed local claim for the exact PR/SHA/harness/dry-run mode and bypasses the GitHub already-posted guard.
-
-### `start`
-```bash
-pr-reviewer start
-pr-reviewer start --daemon
-```
-Starts polling loop in foreground or background.
-
-### `stop`
-```bash
-pr-reviewer stop
-```
-
-### `status`
-```bash
-pr-reviewer status
-```
-Shows daemon/process state and recent polling metadata.
-
-### `queue`
-```bash
-pr-reviewer queue list [--repo <owner/repo>] [--status pending|claimed|failed|completed|canceled] [--limit <n>] [--json]
-pr-reviewer queue show <id> [--json]
-pr-reviewer queue retry <id>
-pr-reviewer queue cancel <id>
-```
-Inspects and operates the persistent maintainer work queue. New PR heads, maintainer commands, and repair markers land here before the daemon invokes the configured agent.
-
-Maintainers can also operate the queue from PR issue comments with `@pr-reviewer fix`, `@pr-reviewer retry [id]`, and `@pr-reviewer cancel [id]`. `status`, `explain`, and queue-control acknowledgements are posted through the configured agent response path.
-
-### `logs`
-```bash
-pr-reviewer logs \
-  [--repo <owner/repo>] \
-  [--since <datetime>] \
-  [--model <model>] \
-  [--harness <harness>] \
-  [--limit <n>]
-```
-
-### `stats`
-```bash
-pr-reviewer stats [--repo <owner/repo>] [--since <datetime>]
-```
-
-### `config`
-```bash
-pr-reviewer config list
-pr-reviewer config get <key>
-pr-reviewer config set <key> <value>
-
-# Token management
-pr-reviewer config set-token [--passphrase] [--signet] [--stdin] [TOKEN]
-pr-reviewer config remove-token
-pr-reviewer config token-status
-```
-
-Examples:
-```bash
-pr-reviewer config set harness.default codex
-pr-reviewer config set daemon.poll_interval_secs 60
-pr-reviewer config set-token --passphrase
-pr-reviewer config token-status
-```
+See the [CLI reference](docs/reference/cli.md).
 
 ## Supported harnesses
 

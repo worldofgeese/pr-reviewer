@@ -38,7 +38,7 @@ export PR_REVIEWER_PASSPHRASE="your-passphrase"
 pr-reviewer start --daemon
 ```
 
-Or see [Deployment](deployment.md) for the systemd `EnvironmentFile=` pattern, which is the recommended approach for production.
+Or see [Run as a service](../how-to/run-as-a-service.md) for the systemd `EnvironmentFile=` pattern, which is the recommended approach for production.
 
 ### `set-token` fails silently or exits with error
 
