@@ -1649,10 +1649,15 @@ impl Database {
         .await
     }
 
+    /// Drops review claims that were never finished (status 'claimed') and are older
+    /// than `max_age_secs`. The row is deleted rather than marked failed: a failed row
+    /// is terminal for its dedupe key, so the work item that `sweep_stale_work_items`
+    /// requeues would be refused by `claim_review` and complete as `skipped:duplicate`
+    /// without a review. Completed and genuinely failed rows are left untouched.
     pub async fn sweep_stale_claims(&self, max_age_secs: u64) -> Result<u64> {
         self.run(move |conn| {
             let changed = conn.execute(
-                "UPDATE review_log SET status='failed', error_message='stale claim swept', completed_at=datetime('now') WHERE status='claimed' AND created_at < datetime('now', ?1)",
+                "DELETE FROM review_log WHERE status='claimed' AND created_at < datetime('now', ?1)",
                 params![format!("-{} seconds", max_age_secs)],
             )?;
             Ok(changed as u64)
@@ -2686,6 +2691,77 @@ mod tests {
 
         // completed entries must not be reclaimed
         assert!(!db.claim_review(claim).await.expect("blocked by completed"));
+    }
+
+    fn sweep_test_claim(key: &str) -> ReviewClaim {
+        ReviewClaim {
+            dedupe_key: key.to_string(),
+            repo: "o/r".to_string(),
+            pr_number: 1,
+            sha: "abc".to_string(),
+            harness: "codex".to_string(),
+            model: None,
+        }
+    }
+
+    async fn age_review_claim(db: &Database, key: &str) {
+        let key = key.to_string();
+        db.run(move |conn| {
+            conn.execute(
+                "UPDATE review_log SET created_at = datetime('now', '-1 hour') WHERE dedupe_key = ?1",
+                params![key],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("age claim");
+    }
+
+    #[tokio::test]
+    async fn swept_stale_claim_can_be_claimed_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::new(dir.path().join("state.db"))
+            .await
+            .expect("db");
+        let claim = sweep_test_claim("stale-then-requeued");
+
+        assert!(db.claim_review(claim.clone()).await.expect("claim"));
+        age_review_claim(&db, "stale-then-requeued").await;
+
+        assert_eq!(db.sweep_stale_claims(60).await.expect("sweep claims"), 1);
+        assert!(db.claim_review(claim).await.expect("claim after sweep"));
+    }
+
+    #[tokio::test]
+    async fn sweep_stale_claims_keeps_completed_reviews_blocking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::new(dir.path().join("state.db"))
+            .await
+            .expect("db");
+        let claim = sweep_test_claim("completed-and-old");
+
+        assert!(db.claim_review(claim.clone()).await.expect("claim"));
+        db.complete_review("completed-and-old", 1, None, 1.0, 1, 1, None, None, None)
+            .await
+            .expect("complete");
+        age_review_claim(&db, "completed-and-old").await;
+
+        assert_eq!(db.sweep_stale_claims(60).await.expect("sweep"), 0);
+        assert!(!db.claim_review(claim).await.expect("blocked by completed"));
+    }
+
+    #[tokio::test]
+    async fn sweep_stale_claims_keeps_fresh_claims_blocking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::new(dir.path().join("state.db"))
+            .await
+            .expect("db");
+        let claim = sweep_test_claim("fresh-claim");
+
+        assert!(db.claim_review(claim.clone()).await.expect("claim"));
+
+        assert_eq!(db.sweep_stale_claims(60).await.expect("sweep"), 0);
+        assert!(!db.claim_review(claim).await.expect("blocked by live claim"));
     }
 
     #[tokio::test]
