@@ -48,7 +48,7 @@ src/
 The core flow for `review_existing_pr`:
 1. Evaluate fork policy → skip if denied
 2. Build dedupe key (`sha256(repo + pr + sha + harness)`) → `claim_review` (atomic INSERT, unique constraint)
-3. Check existing GitHub reviews for this SHA → post in-progress comment only if not already reviewed
+3. Check existing GitHub reviews for this SHA → post in-progress comment only if not already reviewed (a docs-only, empty-diff or unchanged-diff skip in step 4 rewrites it to say the review was skipped and why)
 4. `run_review_pipeline`: fetch diff + file contents + GitNexus context + prior reviews → build prompt → spawn harness → parse output → validate comment positions → post review
 5. On 422 (self-review), retry as COMMENT with inline comments folded into body
 6. `complete_review` in DB with actual posted comment count
