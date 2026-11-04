@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_VERSION="0.1.0"
-REPO_URL="https://github.com/NicholaiVogel/pr-reviewer.git"
+REPO_URL="https://github.com/worldofgeese/pr-reviewer.git"
 MIN_RUST_VERSION="1.75"
 TMPDIR_CLONE=""
 

@@ -50,7 +50,7 @@ No API keys required -- pr-reviewer uses your existing CLI subscriptions (Claude
 
 ```bash
 # one-liner (review the script first, or use the clone method below)
-curl -sSf https://raw.githubusercontent.com/NicholaiVogel/pr-reviewer/main/install.sh -o install.sh
+curl -sSf https://raw.githubusercontent.com/worldofgeese/pr-reviewer/main/install.sh -o install.sh
 less install.sh          # inspect before running
 bash install.sh
 ```
@@ -58,7 +58,7 @@ bash install.sh
 Or from a clone:
 
 ```bash
-git clone https://github.com/NicholaiVogel/pr-reviewer.git
+git clone https://github.com/worldofgeese/pr-reviewer.git
 cd pr-reviewer
 ./install.sh
 ```
@@ -361,3 +361,5 @@ To index a repo: `pr-reviewer index owner/repo` or `gitnexus analyze /path/to/re
 ## License
 
 [MIT](LICENSE)
+
+Forked from [NicholaiVogel/pr-reviewer](https://github.com/NicholaiVogel/pr-reviewer).
