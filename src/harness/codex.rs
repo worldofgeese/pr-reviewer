@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 
-use crate::config::{HarnessKind, ReasoningEffort};
+use crate::config::ReasoningEffort;
 use crate::harness::Harness;
 
 pub struct CodexHarness;
@@ -23,10 +23,6 @@ pub fn last_message_path(working_dir: &Path) -> PathBuf {
 }
 
 impl Harness for CodexHarness {
-    fn kind(&self) -> HarnessKind {
-        HarnessKind::Codex
-    }
-
     fn name(&self) -> &'static str {
         "codex"
     }

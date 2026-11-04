@@ -498,6 +498,7 @@ impl ReviewEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn compose_in_progress_comment(
         &self,
         harness_kind: HarnessKind,
@@ -572,6 +573,7 @@ impl ReviewEngine {
         composed
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_review_pipeline(
         &self,
         repo_cfg: &RepoConfig,
@@ -1060,7 +1062,7 @@ impl ReviewEngine {
         // Keep provenance available without putting review mechanics above the finding.
         body.push_str(&build_review_metadata_block(
             model,
-            &short_sha(&pr_data.head.sha),
+            short_sha(&pr_data.head.sha),
         ));
 
         match parse_outcome {
@@ -1224,7 +1226,7 @@ impl ReviewEngine {
         if !unmapped_comments.is_empty() {
             body.push_str("\n\nUnmapped findings (not on changed lines):\n");
             for line in &unmapped_comments {
-                body.push_str(&line);
+                body.push_str(line);
                 body.push('\n');
             }
         }
@@ -2230,6 +2232,7 @@ impl ReviewEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn respond_to_maintainer_command(
         &self,
         repo_cfg: &RepoConfig,
@@ -2397,7 +2400,7 @@ fn has_dismissal_signal(text: &str) -> bool {
         if signal.contains(' ') {
             joined.contains(signal)
         } else {
-            words.iter().any(|w| *w == *signal)
+            words.contains(signal)
         }
     })
 }
@@ -2432,6 +2435,7 @@ fn token_overlap(left: &HashSet<String>, right: &HashSet<String>) -> usize {
 
 /// `resolved_threads` maps a thread's root comment id to whether a human
 /// resolved it on GitHub; pass an empty map when that is unknown.
+#[allow(clippy::too_many_arguments)]
 fn build_review_memory(
     reviews: &[PullRequestReview],
     review_comments: &[ReviewComment],
@@ -2858,6 +2862,7 @@ fn build_stored_findings_context(findings: &[ReviewFindingRecord]) -> String {
 ///
 /// Returns the upserts, the delta, and the fingerprint each current finding
 /// was stored under (same order as `current_findings`).
+#[allow(clippy::too_many_arguments)]
 fn reconcile_finding_ledger(
     repo: &str,
     pr_number: i64,
@@ -3398,8 +3403,8 @@ fn extract_file_snippet(content: &str, line: usize, radius: usize) -> String {
     let end = (line + radius).min(lines.len());
 
     let mut out = String::new();
-    for idx in start..end {
-        out.push_str(&format!("{:>5}: {}\n", idx + 1, lines[idx]));
+    for (idx, text) in lines.iter().enumerate().take(end).skip(start) {
+        out.push_str(&format!("{:>5}: {}\n", idx + 1, text));
     }
     out
 }
@@ -3429,6 +3434,7 @@ fn terminal_pr_state(pr_data: &PullRequest) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_final_review_transcript(
     repo_name: &str,
     pr_data: &PullRequest,
@@ -4159,10 +4165,7 @@ fn find_comment_text(value: &serde_json::Value) -> Option<String> {
 }
 
 fn sanitize_in_progress_title(title: &str) -> String {
-    let sanitized = title
-        .replace(['\r', '\n'], " ")
-        .replace('"', "'")
-        .replace('`', "'");
+    let sanitized = title.replace(['\r', '\n'], " ").replace(['"', '`'], "'");
     sanitized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -4354,6 +4357,7 @@ fn build_durable_in_progress_comment(pr_data: &PullRequest, status_comment: &str
     truncate_github_comment_body(&body)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_durable_review_comment(
     pr_data: &PullRequest,
     model: &str,
@@ -6178,7 +6182,7 @@ Reviewed the archive flow.
             "sha-1",
             "alice",
             &[],
-            &[original.clone()],
+            std::slice::from_ref(&original),
             &memory,
             &paths(&["src/fetch.rs"]),
             None,

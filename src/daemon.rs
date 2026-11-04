@@ -589,7 +589,7 @@ pub async fn collect_status(db: &Database, config: &AppConfig) -> Result<DaemonS
         daemon
             .started_at
             .as_deref()
-            .and_then(|started| parse_rfc3339_to_utc(started))
+            .and_then(parse_rfc3339_to_utc)
             .map(|started| (now - started).num_seconds().max(0))
     } else {
         None
@@ -920,13 +920,10 @@ async fn apply_maintainer_command(
                 match db.get_work_item(id).await? {
                     Some(item)
                         if item.repo.eq_ignore_ascii_case(repo_name)
-                            && item.pr_number == pr.number as i64 =>
+                            && item.pr_number == pr.number as i64
+                            && db.cancel_work_item(id).await? =>
                     {
-                        if db.cancel_work_item(id).await? {
-                            1
-                        } else {
-                            0
-                        }
+                        1
                     }
                     _ => 0,
                 }
@@ -1236,6 +1233,25 @@ fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
 }
 
+fn remove_pid(path: &PathBuf) -> Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to remove pid file {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn is_pid_alive(pid: i32) -> bool {
+    kill(Pid::from_raw(pid), None).is_ok()
+}
+
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1365,23 +1381,4 @@ mod tests {
         ))));
         assert!(!is_maintainer_comment(&test_issue_comment(None)));
     }
-}
-
-fn remove_pid(path: &PathBuf) -> Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path)
-            .with_context(|| format!("failed to remove pid file {}", path.display()))?;
-    }
-    Ok(())
-}
-
-fn is_pid_alive(pid: i32) -> bool {
-    kill(Pid::from_raw(pid), None).is_ok()
-}
-
-fn now_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }

@@ -2,6 +2,7 @@ use crate::config::{RepoConfig, ReviewPolicy};
 use crate::github::types::PullRequest;
 use crate::review::policy::{ReviewRound, RoundMode};
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_review_prompt(
     repo_cfg: &RepoConfig,
     pr: &PullRequest,

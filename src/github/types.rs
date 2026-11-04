@@ -14,6 +14,7 @@ impl User {
     }
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepoRef {
     pub full_name: String,
@@ -39,6 +40,7 @@ pub struct PullRequestBase {
     pub repo: RepoRef,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullRequest {
     pub number: u64,
@@ -171,6 +173,7 @@ pub struct ContentResponse {
     pub encoding: String,
 }
 
+#[allow(dead_code)] // mirrors the external schema; not every field is read
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrFile {
     pub filename: String,

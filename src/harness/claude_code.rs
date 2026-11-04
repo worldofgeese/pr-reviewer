@@ -2,16 +2,12 @@ use std::path::Path;
 
 use tokio::process::Command;
 
-use crate::config::{HarnessKind, ReasoningEffort};
+use crate::config::ReasoningEffort;
 use crate::harness::Harness;
 
 pub struct ClaudeCodeHarness;
 
 impl Harness for ClaudeCodeHarness {
-    fn kind(&self) -> HarnessKind {
-        HarnessKind::ClaudeCode
-    }
-
     fn name(&self) -> &'static str {
         "claude-code"
     }

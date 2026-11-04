@@ -29,7 +29,7 @@ pub fn ensure_keyfile() -> Result<[u8; KEY_LEN]> {
     let mut key = [0u8; KEY_LEN];
     OsRng.fill_bytes(&mut key);
     match write_keyfile_exclusive(&path, &key) {
-        Ok(()) => return Ok(key),
+        Ok(()) => Ok(key),
         Err(err) => {
             // Only fall through to reading if the file actually exists now;
             // otherwise propagate the real error (permission denied, disk full, etc.)

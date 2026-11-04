@@ -14,14 +14,6 @@ pub enum ReviewVerdict {
 }
 
 impl ReviewVerdict {
-    pub fn as_github_event(self) -> &'static str {
-        match self {
-            ReviewVerdict::NoIssues | ReviewVerdict::Approve => "COMMENT",
-            ReviewVerdict::Comment => "COMMENT",
-            ReviewVerdict::RequestChanges => "REQUEST_CHANGES",
-        }
-    }
-
     /// Normalize legacy Approve into NoIssues.
     pub fn normalized(self) -> Self {
         match self {
@@ -98,21 +90,19 @@ impl std::fmt::Display for ConfidenceReason {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CommentSeverity {
     Blocking,
+    #[default]
     Warning,
     Nitpick,
 }
 
-impl Default for CommentSeverity {
-    fn default() -> Self {
-        CommentSeverity::Warning
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum FindingKind {
+    #[default]
     Correctness,
     Security,
     DataIntegrity,
@@ -124,12 +114,6 @@ pub enum FindingKind {
     LocalEnvironmentLeak,
     TestGap,
     Documentation,
-}
-
-impl Default for FindingKind {
-    fn default() -> Self {
-        FindingKind::Correctness
-    }
 }
 
 impl FindingKind {
