@@ -323,7 +323,7 @@ impl ReviewEngine {
 
         // Fetch existing reviews once — used for both in-progress guard and duplicate check
         // inside run_review_pipeline, avoiding a redundant API call.
-        // The review list decides the review round and guards against posting
+        // The review list decides the review cycle and guards against posting
         // twice, so it must be known. A failed work item is not queued again
         // for the same head, so retry transient errors here before failing.
         let existing_reviews = match with_github_retries("list existing reviews", || {
@@ -377,7 +377,7 @@ impl ReviewEngine {
                     )
                 });
 
-                // Only post in-progress comment on first touch. Follow-up rounds
+                // Only post in-progress comment on first touch. Follow-up review cycles
                 // skip it to reduce noise.
                 if !has_prior_bot_review {
                     let in_progress = self
@@ -815,15 +815,15 @@ impl ReviewEngine {
         );
 
         let bot_name = self.config.defaults.bot_name.as_str();
-        // The account the bot posts as. Needed to count review rounds; without
-        // it every review would look like round 1 and the limit never applies.
+        // The account the bot posts as. Needed to count review cycles; without
+        // it every review would look like review cycle 1 and the limit never applies.
         let bot_alias_owned = match self.authenticated_user.clone() {
             Some(login) => login,
             None => with_github_retries("identify the bot account", || {
                 self.github.get_authenticated_user()
             })
             .await
-            .context("cannot identify the bot account, so review rounds cannot be counted")?,
+            .context("cannot identify the bot account, so review cycles cannot be counted")?,
         };
         let bot_alias = Some(bot_alias_owned.as_str());
         let resolved_threads = if review_comments

@@ -33,10 +33,10 @@ src/
 │   └── codex.rs         # codex exec --model <m> --skip-git-repo-check --json "<prompt>"
 ├── review/
 │   ├── engine.rs        # Pipeline orchestration: claim → context → harness → parse → post → complete
-│   ├── prompt.rs        # Prompt construction with schema, guidelines, round and stack sections, repo custom instructions
-│   ├── policy.rs        # Review-cycle policy: round mode, finding dispositions, `same_finding`, stale change requests
+│   ├── prompt.rs        # Prompt construction with schema, guidelines, review-cycle and stack sections, repo custom instructions
+│   ├── policy.rs        # Review-cycle policy: review-cycle mode, finding dispositions, `same_finding`, stale change requests
 │   ├── stack.rs         # Stacked PRs: change fingerprint, base-chain/native stack detection, stack prompt context
-│   ├── pipeline_tests.rs # End-to-end review rounds against a mock GitHub and a stub `claude` harness
+│   ├── pipeline_tests.rs # End-to-end review cycles against a mock GitHub and a stub `claude` harness
 │   └── parser.rs        # JSON extraction (marked block → brace-match → raw fallback), schema validation
 └── store/
     └── db.rs            # SQLite (rusqlite, WAL mode) — pr_state, review_log, daemon_status, migrations
@@ -78,7 +78,7 @@ GitNexus outputs to **stderr** because KuzuDB captures stdout at OS level. The c
 ### Review cycles and stacks (policy.rs, stack.rs)
 
 - A push whose change fingerprint (`stack::change_fingerprint`: paths, added/removed lines and the context line on each side of every change group; no line numbers) equals `pr_state.last_reviewed_diff_hash` completes as `skipped:unchanged-diff`. Rebases and stack cascades land here. The ledger is written only after a review reached GitHub. The fingerprint is written then too, and on the paths that post nothing because the reviewed state is already on GitHub (`skipped:unchanged-diff`, `skipped:no-novel-findings`, `skipped:already-posted`); never after a failed post.
-- The round is the number of commits the bot reviewed before (reviews carrying `policy::REVIEW_METADATA_MARKER`), plus one. If the review list or the bot's own login cannot be read, the review fails rather than counting zero. Past `max_review_cycles`, `decide_disposition` turns new findings into follow-up notes (ledger status `noted`, inactive), except critical ones on changed lines.
+- The review cycle number is the number of commits the bot reviewed before (reviews carrying `policy::REVIEW_METADATA_MARKER`), plus one. If the review list or the bot's own login cannot be read, the review fails rather than counting zero. Past `max_review_cycles`, `decide_disposition` turns new findings into follow-up notes (ledger status `noted`, inactive), except critical ones on changed lines.
 - Every "is this the same finding" question goes through `policy::same_finding` (same path; disjoint backticked identifiers never match; token containment >= 0.6, or >= 0.45 within 15 lines). Hiding a finding behind an open or resolved thread uses `same_finding_near`, which needs both lines known (outdated threads fall back to `original_line`; no line means no match). Do not add another token-overlap rule: shared-token counts cannot tell findings apart. (The one remaining overlap rule is for free-text "out of scope" boundaries from the PR conversation, which are topics, not findings; evidenced findings bypass it.)
 - Ancestor dedupe applies only to findings on lines the PR does not change, and never to critical findings.
 - The ledger marks an unre-emitted finding fixed only if the PR's own change to its file differs from the last review (`ChangeFingerprint::changed_files`, from `pr_state.last_reviewed_file_hashes`) or the file left the diff. Never derive "changed" from the compare API: after a rebase its three-dot diff lists every file of the PR. Unknown keeps findings open.
@@ -128,9 +128,17 @@ Cached `authenticated_user` at engine init. Falls back to live API call if cache
 
 ## User-facing documentation (`docs/`)
 
-- [docs/troubleshooting.md](docs/troubleshooting.md) — token errors, rate limits, harness failures, daemon issues, GitNexus problems
-- [docs/deployment.md](docs/deployment.md) — systemd unit file, passphrase env var handling, log management, backup/restore, upgrades
-- [docs/configuration.md](docs/configuration.md) — full config reference with explanations, fork policy, confidence scoring, multi-step workflows
+Organised by the Diataxis framework; start at [docs/README.md](docs/README.md).
+
+- [docs/tutorials/](docs/tutorials/) — learning-oriented walkthroughs ([getting-started.md](docs/tutorials/getting-started.md))
+- [docs/how-to/run-as-a-service.md](docs/how-to/run-as-a-service.md) — systemd unit file, passphrase env var handling, token setup, log management, health monitoring
+- [docs/how-to/back-up-and-upgrade.md](docs/how-to/back-up-and-upgrade.md) — backup, restore, upgrades
+- [docs/reference/cli.md](docs/reference/cli.md) — every command and flag
+- [docs/reference/configuration.md](docs/reference/configuration.md) — full config reference, multi-step workflows
+- [docs/reference/environment.md](docs/reference/environment.md) — environment variables
+- [docs/reference/troubleshooting.md](docs/reference/troubleshooting.md) — token errors, rate limits, harness failures, daemon issues, GitNexus problems
+- [docs/explanation/how-a-review-works.md](docs/explanation/how-a-review-works.md) — review cycles, stacked PRs, fork policy, confidence scoring
+- [docs/adr/](docs/adr/) — architecture decision records
 
 ## Testing
 

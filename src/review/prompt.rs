@@ -129,7 +129,7 @@ pub fn build_review_prompt(
     prompt.push_str(&format!("Base branch: `{}`\n", pr.base.ref_name));
 
     if let Some(section) = build_round_section(round, policy) {
-        prompt.push_str("\n## Review Round\n");
+        prompt.push_str("\n## Review Cycle\n");
         prompt.push_str(&section);
     }
 
@@ -160,8 +160,8 @@ pub fn build_review_prompt(
     prompt
 }
 
-/// Tells the model what this round is for. `None` keeps the old prompt for
-/// unlimited later rounds.
+/// Tells the model what this review cycle is for. `None` keeps the old prompt for
+/// unlimited later review cycles.
 fn build_round_section(round: ReviewRound, policy: &ReviewPolicy) -> Option<String> {
     let kinds = policy
         .critical_finding_kinds
@@ -171,16 +171,16 @@ fn build_round_section(round: ReviewRound, policy: &ReviewPolicy) -> Option<Stri
         .join(", ");
     match round.mode {
         RoundMode::Full if round.number == 1 && round.limit > 0 => Some(format!(
-            "This is the first review of this PR. Make it complete: report every finding you have now. Later rounds verify fixes, and after round {} new findings are only shown as non-blocking notes.\n",
+            "This is the first review of this PR. Make it complete: report every finding you have now. Later review cycles verify fixes, and after review cycle {} new findings are only shown as non-blocking notes.\n",
             round.limit
         )),
         RoundMode::Full => None,
         RoundMode::Verification => Some(format!(
-            "This is review round {} of up to {} rounds with inline findings. First check each earlier finding in the context (Previously Flagged Items, Persisted Finding Ledger): leave out the ones that are fixed, and repeat one that is still present only with its earlier wording. Report a new finding only if it is in code changed since your last review (see the incremental diff) or it is a real bug, security or data-integrity problem. Do not raise new wording, style or documentation points about code you already reviewed.\n",
+            "This is review cycle {} of up to {} review cycles with inline findings. First check each earlier finding in the context (Previously Flagged Items, Persisted Finding Ledger): leave out the ones that are fixed, and repeat one that is still present only with its earlier wording. Report a new finding only if it is in code changed since your last review (see the incremental diff) or it is a real bug, security or data-integrity problem. Do not raise new wording, style or documentation points about code you already reviewed.\n",
             round.number, round.limit
         )),
         RoundMode::FollowUp => Some(format!(
-            "This is review round {}, after the limit of {} rounds with inline findings. New findings are shown as non-blocking notes, not as review threads. A finding is posted inline, and can block the merge, only if its severity is \"blocking\", its finding_kind is one of [{kinds}], and its evidence_note names the exact changed lines that prove it. Use that only for real defects. Keep this review short: say what is fixed, and list at most a few new notes.\n",
+            "This is review cycle {}, after the limit of {} review cycles with inline findings. New findings are shown as non-blocking notes, not as review threads. A finding is posted inline, and can block the merge, only if its severity is \"blocking\", its finding_kind is one of [{kinds}], and its evidence_note names the exact changed lines that prove it. Use that only for real defects. Keep this review short: say what is fixed, and list at most a few new notes.\n",
             round.number, round.limit
         )),
     }
@@ -298,21 +298,22 @@ mod tests {
     fn first_round_asks_for_a_complete_review() {
         let prompt = prompt_for(0, 2, None);
         assert!(prompt.contains("This is the first review of this PR. Make it complete"));
-        assert!(prompt.contains("after round 2 new findings are only shown as non-blocking notes"));
+        assert!(prompt
+            .contains("after review cycle 2 new findings are only shown as non-blocking notes"));
         assert!(prompt.contains("Base branch: `main`"));
     }
 
     #[test]
     fn verification_round_focuses_on_earlier_findings() {
         let prompt = prompt_for(1, 2, None);
-        assert!(prompt.contains("This is review round 2 of up to 2 rounds"));
+        assert!(prompt.contains("This is review cycle 2 of up to 2 review cycles"));
         assert!(prompt.contains("First check each earlier finding"));
     }
 
     #[test]
     fn follow_up_round_states_the_critical_bar() {
         let prompt = prompt_for(4, 2, None);
-        assert!(prompt.contains("This is review round 5, after the limit of 2 rounds"));
+        assert!(prompt.contains("This is review cycle 5, after the limit of 2 review cycles"));
         assert!(prompt
             .contains("\"security\", \"secret_exposure\", \"data_integrity\", \"correctness\""));
         assert!(prompt.contains("evidence_note names the exact changed lines"));
@@ -321,7 +322,7 @@ mod tests {
     #[test]
     fn unlimited_rounds_keep_the_old_prompt() {
         let prompt = prompt_for(6, 0, None);
-        assert!(!prompt.contains("## Review Round"));
+        assert!(!prompt.contains("## Review Cycle"));
     }
 
     #[test]

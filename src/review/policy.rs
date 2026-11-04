@@ -1,8 +1,8 @@
-//! Review-cycle policy: which round a review is, what happens to each
-//! finding in that round, and when the bot's own change requests are stale.
+//! Review-cycle policy: which review cycle a review is, what happens to each
+//! finding in that review cycle, and when the bot's own change requests are stale.
 //!
-//! Round 1 is the full review. Rounds 2..=`max_review_cycles` verify earlier
-//! findings. Later rounds still run, but new findings that are not critical
+//! Review cycle 1 is the full review. Review cycles 2..=`max_review_cycles` verify earlier
+//! findings. Later review cycles still run, but new findings that are not critical
 //! become non-blocking notes in the review body instead of inline threads,
 //! so a PR cannot be held open by an endless stream of new comments.
 
@@ -13,13 +13,13 @@ use crate::github::types::PullRequestReview;
 use crate::review::parser::{CommentSeverity, FindingKind, ReviewComment, ReviewVerdict};
 
 /// Line in the metadata block of every review the bot posts. Counting
-/// reviews that carry it tells the bot how many rounds it has run, even when
+/// reviews that carry it tells the bot how many review cycles it has run, even when
 /// it posts under a personal account that humans also review with.
 pub const REVIEW_METADATA_MARKER: &str = "- Reviewer: [pr-reviewer](";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RoundMode {
-    /// Post every finding inline. Round 1, or every round when there is no limit.
+    /// Post every finding inline. Review cycle 1, or every review cycle when there is no limit.
     Full,
     /// Re-check earlier findings; new findings are still posted inline.
     Verification,
@@ -71,7 +71,7 @@ pub fn is_bot_review(review: &PullRequestReview, bot_name: &str, bot_alias: Opti
     }
 }
 
-/// Number of review rounds the bot already posted on earlier commits: one
+/// Number of review cycles the bot already posted on earlier commits: one
 /// per reviewed commit, so several reviews of one commit count once.
 pub fn count_prior_bot_reviews(
     reviews: &[PullRequestReview],
@@ -344,7 +344,7 @@ pub fn follow_up_notes_section(round: ReviewRound, notes: &[FollowUpNote]) -> Op
         CommentSeverity::Nitpick => 2,
     });
     let mut out = format!(
-        "### Follow-up notes (non-blocking)\nThis is review round {} and inline findings stop after round {}, so these new findings are notes only. They do not block merging. Critical problems on changed lines are still posted inline.\n",
+        "### Follow-up notes (non-blocking)\nThis is review cycle {} and inline findings stop after review cycle {}, so these new findings are notes only. They do not block merging. Critical problems on changed lines are still posted inline.\n",
         round.number, round.limit
     );
     for note in ordered {
@@ -531,21 +531,21 @@ mod tests {
         let reviews = vec![
             review(1, "alice", "sha1", "COMMENTED", true),
             review(2, "alice", "sha2", "CHANGES_REQUESTED", true),
-            // The same personal account reviewing by hand is not a bot round.
+            // The same personal account reviewing by hand is not a bot review cycle.
             review(3, "alice", "sha2", "COMMENTED", false),
-            // Someone else quoting the marker is not a bot round either.
+            // Someone else quoting the marker is not a bot review cycle either.
             review(4, "mallory", "sha2", "COMMENTED", true),
-            // A review of the current head does not count as a prior round.
+            // A review of the current head does not count as a prior review cycle.
             review(5, "alice", "sha3", "COMMENTED", true),
             // A dedicated bot account counts even without the marker, but a
-            // second bot review of an already reviewed commit is the same round.
+            // second bot review of an already reviewed commit is the same review cycle.
             review(6, "pr-reviewer", "sha1", "COMMENTED", false),
             review(7, "pr-reviewer", "sha4", "COMMENTED", false),
         ];
         assert_eq!(
             count_prior_bot_reviews(&reviews, "pr-reviewer", Some("alice"), "sha3"),
             3,
-            "rounds are reviewed commits: sha1, sha2 and sha4"
+            "review cycles are reviewed commits: sha1, sha2 and sha4"
         );
     }
 
@@ -776,7 +776,7 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(section.contains("review round 4 and inline findings stop after round 2"));
+        assert!(section.contains("review cycle 4 and inline findings stop after review cycle 2"));
         let blocker = section.find("may panic").unwrap();
         let nit = section.find("rename x").unwrap();
         assert!(blocker < nit, "{section}");
