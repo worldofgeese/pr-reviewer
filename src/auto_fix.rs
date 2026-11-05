@@ -390,7 +390,7 @@ fn matching_repair_marker(
     authenticated_user: Option<&str>,
 ) -> Option<RepairMarker> {
     issue_comments.iter().rev().find_map(|comment| {
-        if !login_matches_bot(&comment.user.login, bot_name, authenticated_user) {
+        if !comment.is_own_comment(bot_name, authenticated_user) {
             return None;
         }
         let marker = parse_repair_marker(&comment.body)?;
@@ -431,11 +431,6 @@ fn parse_repair_marker(body: &str) -> Option<ParsedRepairMarker> {
         pr_number: pr_number?,
         sha: sha?,
     })
-}
-
-fn login_matches_bot(login: &str, bot_name: &str, authenticated_user: Option<&str>) -> bool {
-    login.eq_ignore_ascii_case(bot_name)
-        || authenticated_user.is_some_and(|user| login.eq_ignore_ascii_case(user))
 }
 
 fn is_same_repo_pr(repo_cfg: &RepoConfig, pr_data: &PullRequest) -> bool {
@@ -698,6 +693,35 @@ mod tests {
 
         assert_eq!(parsed.pr_number, 42);
         assert_eq!(parsed.sha, "abc123");
+    }
+
+    #[test]
+    fn repair_marker_needs_the_daemon_login() {
+        let pr = test_pr(42, "feature/fix", "main");
+        let marker =
+            "<!-- pr-reviewer-action:fix-required pr=42 sha=abc123 finding=review-feedback -->";
+        let forged = vec![issue_comment(1, "mallory", marker)];
+        let real = vec![issue_comment(2, "tao", marker)];
+        let unmarked = vec![issue_comment(3, "tao", "@pr-reviewer fix")];
+
+        assert!(!has_matching_repair_marker(
+            &pr,
+            &forged,
+            "pr-reviewer",
+            Some("tao")
+        ));
+        assert!(has_matching_repair_marker(
+            &pr,
+            &real,
+            "pr-reviewer",
+            Some("tao")
+        ));
+        assert!(!has_matching_repair_marker(
+            &pr,
+            &unmarked,
+            "pr-reviewer",
+            Some("tao")
+        ));
     }
 
     #[test]

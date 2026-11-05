@@ -12,7 +12,7 @@ The bot name is the configuration key `defaults.bot_name`. Its default is `pr-re
 | A comment in an inline review thread | [Mentions](#thread-mentions) and [reply phrases](#phrases-in-a-thread-reply) | Any user |
 | A comment on the **Conversation** tab | [Out-of-scope phrases](#phrases-in-a-thread-reply) for the whole pull request | Any user except the bot |
 
-The daemon skips comments from the authenticated bot account and from any GitHub account of type bot. It does not read the pull request description or the body of a review.
+The daemon skips its own comments and comments from any GitHub account of type bot. This applies to comments on the **Conversation** tab. A Conversation comment is the daemon's own only when it carries a `<!-- pr-reviewer-... -->` [marker](#markers) and its author is the authenticated account. If you run the daemon on your own account, your commands still work, because they carry no marker. A marker in a comment from any other account gives that comment no special treatment. A command that quotes a bot comment and so carries its marker is also treated as the daemon's own when the same account wrote it. When the daemon skips one of its own comments, it logs the comment id at `debug` level. In inline review threads, the daemon still skips every comment from the authenticated account, because review comments carry no marker. It does not read the pull request description or the body of a review.
 
 ## Commands
 
@@ -54,7 +54,7 @@ The daemon starts a repair only when all of these are true:
 
 The repair commit has the message `fix: address pr-reviewer findings for <12 characters of the commit>`. The daemon pushes it to the branch of the pull request. The new head commit starts a new review cycle.
 
-When `auto_fix.enabled` is `true`, the daemon also queues a repair without a command. It does this when the bot's own comment for the current head commit contains the [`fix-required` marker](#markers).
+When `auto_fix.enabled` is `true`, the daemon also queues a repair without a command. It does this when a comment for the current head commit contains the [`fix-required` marker](#markers) and the daemon's authenticated account wrote it. The daemon ignores the marker in a comment from any other account.
 
 ## Thread mentions
 

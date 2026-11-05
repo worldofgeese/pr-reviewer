@@ -4703,6 +4703,43 @@ Ship the archive feature safely.",
     }
 
     #[test]
+    fn every_durable_comment_the_daemon_posts_is_an_own_comment() {
+        let pr = test_pull_request_with_body(Some("Review me."));
+        let bodies = [
+            build_durable_in_progress_comment(&pr, "Taking a look."),
+            build_durable_skipped_comment(&pr, "docs-only"),
+            build_durable_review_comment(
+                &pr,
+                "gpt-5.4",
+                ReviewVerdict::RequestChanges,
+                "REQUEST_CHANGES",
+                2,
+                true,
+                true,
+                "@pr-reviewer fix\nsummary",
+            ),
+            build_durable_review_status_comment(
+                &pr,
+                "gpt-5.4",
+                ReviewVerdict::RequestChanges,
+                "REQUEST_CHANGES",
+                2,
+            ),
+        ];
+
+        for body in bodies {
+            let comment = IssueComment {
+                id: 1,
+                body,
+                user: test_user("tao"),
+                author_association: None,
+                created_at: "2026-11-05T00:00:00Z".to_string(),
+            };
+            assert!(comment.is_own_comment("pr-reviewer", Some("tao")));
+        }
+    }
+
+    #[test]
     fn durable_in_progress_comment_includes_stable_marker() {
         let pr = test_pull_request_with_body(Some("Review me."));
         let body = build_durable_in_progress_comment(&pr, "Taking a look.");

@@ -118,6 +118,19 @@ pub struct IssueComment {
     pub created_at: String,
 }
 
+impl IssueComment {
+    /// True when the daemon posted this comment: it carries a
+    /// `<!-- pr-reviewer-... -->` marker AND its author is the bot or the
+    /// authenticated account. The marker alone is forgeable, and the login
+    /// alone also matches a person who runs the daemon on their own account.
+    pub fn is_own_comment(&self, bot_name: &str, authenticated_user: Option<&str>) -> bool {
+        self.body.contains("<!-- pr-reviewer-")
+            && (self.user.login.eq_ignore_ascii_case(bot_name)
+                || authenticated_user
+                    .is_some_and(|login| self.user.login.eq_ignore_ascii_case(login)))
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateReviewComment {
     pub path: String,
