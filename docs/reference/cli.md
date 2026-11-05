@@ -130,7 +130,16 @@ Starts the daemon. It polls GitHub for new and updated pull requests of the watc
 
 Without `--daemon`, the daemon runs in the foreground and logs to the terminal. With `--daemon`, `start` runs the daemon as a background process and prints its process ID. The background process discards all output. To keep logs, use a service manager. See [Run pr-reviewer as a service](../how-to/run-as-a-service.md).
 
-The daemon writes its process ID to `daemon.pid` in the config directory.
+The daemon writes its process ID to `daemon.pid` in the config directory. That file is for information, `stop` and `status`. Ownership is decided by an exclusive lock on `daemon.lock` in the same directory.
+
+Only one daemon can run per config directory:
+
+- The daemon takes the lock when it starts and keeps it until the process exits. The operating system releases the lock when the process exits or crashes, so a crash leaves no stale lock.
+- If another daemon holds the lock, `start` exits with a non-zero status. The error names the config directory and, when it can read it, the process ID of the holder. `start --daemon` reports this error too. The queue is not changed.
+- After it takes the lock, the daemon puts every work item that is still `claimed` back to `pending`, and drops the matching unfinished review claims. A new process cannot own a claim, so all of them are left over from an earlier process, however recent. The work runs again.
+- The lock works on one host. It does not protect a config directory on a network file system that several hosts share.
+
+`status`, `queue` and `logs` do not take the lock. They run next to a live daemon.
 
 ## `stop`
 
@@ -138,7 +147,7 @@ The daemon writes its process ID to `daemon.pid` in the config directory.
 pr-reviewer stop
 ```
 
-Sends `SIGTERM` to the process ID in `daemon.pid` and removes the file. Do not use it for a daemon that a service manager restarts.
+Sends `SIGTERM` to the process ID in `daemon.pid`, removes the file and waits up to 10 seconds for the process to exit, so that a `start` right after `stop` is not refused by the lock. Do not use it for a daemon that a service manager restarts.
 
 ## `status`
 

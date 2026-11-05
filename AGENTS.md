@@ -90,7 +90,7 @@ Simple `Confidence { level: ConfidenceLevel, justification: String }` where leve
 
 - DB claim lock prevents concurrent duplicate reviews (unique constraint on dedupe_key)
 - GitHub-side check prevents re-posting if DB is wiped (queries existing reviews for bot + SHA match)
-- Stale claims swept on daemon startup (older than harness timeout + 30s)
+- One daemon per config directory: an exclusive `flock` on `daemon.lock`, held for the process lifetime. Only after it holds the lock does start-up requeue every `claimed` work item and drop unfinished review claims (`requeue_orphaned_claims`)
 
 ### Self-Review Detection (engine.rs)
 
@@ -119,6 +119,7 @@ Cached `authenticated_user` at engine init. Falls back to live API call if cache
 - Config: `~/.config/pr-reviewer/config.toml`
 - Database: `~/.config/pr-reviewer/state.db` (SQLite, WAL mode)
 - PID file: `~/.config/pr-reviewer/daemon.pid`
+- Daemon lock: `~/.config/pr-reviewer/daemon.lock` (OS file lock; the running daemon holds it and writes its pid into it)
 - Keyfile: `~/.config/pr-reviewer/keyfile` (32-byte AES key, permissions `0600`)
 - Managed repos: `~/.config/pr-reviewer/repos/{owner}/{name}/`
 - Tables: `pr_state`, `review_log`, `daemon_status`, `repo_etags`, `schema_version`

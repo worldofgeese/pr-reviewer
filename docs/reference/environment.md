@@ -41,7 +41,8 @@ The directory contains these files:
 | `state.db` | The SQLite database: the review log, the state of each pull request and the daemon status. |
 | `state.db-wal`, `state.db-shm` | Temporary files of the database. |
 | `keyfile` | The 32-byte key that encrypts the token. The file mode is `0600`. |
-| `daemon.pid` | The process ID of the running daemon. |
+| `daemon.pid` | The process ID of the running daemon. For information only. |
+| `daemon.lock` | The lock that allows one daemon per config directory. The running daemon holds it and writes its process ID into it. |
 | `repos/<owner>/<name>/` | The managed clones. |
 
 To run a second, separate setup, for example for a test, set `PR_REVIEWER_CONFIG_DIR` to an empty directory. The [first review tutorial](../tutorials/getting-started.md) does this.

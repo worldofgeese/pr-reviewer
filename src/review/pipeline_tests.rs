@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::config::{AppConfig, RepoConfig};
 use crate::github::client::GitHubClient;
 use crate::review::engine::{ReviewEngine, ReviewOptions};
-use crate::store::db::{Database, ReviewFindingUpsert};
+use crate::store::db::{dedupe_key, Database, ReviewClaim, ReviewFindingUpsert};
 
 const MARKER: &str = crate::review::policy::REVIEW_METADATA_MARKER;
 
@@ -1164,4 +1164,45 @@ async fn a_dry_run_skip_posts_no_comment() {
         .unwrap();
     assert_eq!(result.status, "skipped:docs-only");
     assert!(comment_bodies(&gh).is_empty());
+}
+
+#[tokio::test]
+async fn a_review_claimed_before_a_restart_is_reviewed_after_the_start_up_requeue() {
+    let run = Run::new("restart-requeue");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    run.respond(1, review_json("no_issues", json!([])));
+
+    // The old daemon claimed the review and died: a claimed work item plus the
+    // claim row of the review it had started.
+    let harness = config.harness.default.as_str();
+    let key = dedupe_key("o/r", 7, "s1", harness, false);
+    assert!(db
+        .claim_review(ReviewClaim {
+            dedupe_key: key,
+            repo: "o/r".to_string(),
+            pr_number: 7,
+            sha: "s1".to_string(),
+            harness: harness.to_string(),
+            model: None,
+        })
+        .await
+        .unwrap());
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+    let before = review_round(&config, &db, &gh, 7).await;
+    assert_eq!(
+        before.status, "skipped:duplicate",
+        "the orphaned claim blocks the review until it is released"
+    );
+
+    db.requeue_orphaned_claims().await.unwrap();
+
+    let after = review_round(&config, &db, &gh, 7).await;
+    assert_eq!(after.status, "completed");
+    assert_eq!(gh.posted_reviews.lock().unwrap().len(), 1);
+    assert_eq!(run.reviews_run(), 1);
 }
