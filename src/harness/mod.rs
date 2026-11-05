@@ -18,6 +18,7 @@ pub trait Harness: Send + Sync {
         model: &str,
         reasoning_effort: Option<ReasoningEffort>,
         working_dir: &Path,
+        tools: &[String],
     ) -> Command;
     /// Whether this harness accepts the prompt via stdin instead of CLI arg.
     fn uses_stdin(&self) -> bool {

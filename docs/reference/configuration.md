@@ -34,6 +34,7 @@ default = "claude-code"   # claude-code | opencode | codex
 model = "claude-sonnet-4-6"
 reasoning_effort = "low"  # optional, currently used by codex
 timeout_secs = 1800
+review_tools = []         # claude-code only; built-in tools a review session may use
 ```
 
 | Field | Default | Description |
@@ -42,6 +43,30 @@ timeout_secs = 1800
 | `model` | `claude-sonnet-4-6` | Model identifier passed to the harness CLI |
 | `reasoning_effort` | unset | Optional reasoning effort override. When using Codex, pr-reviewer passes this through as `-c model_reasoning_effort="..."` |
 | `timeout_secs` | `1800` | Seconds to wait for a harness response before treating the review as failed |
+| `review_tools` | `[]` | Built-in tools that a review session may use. Empty means none. See [Review session tools](#review-session-tools). A repository can override it. |
+
+### Review session tools
+
+A review session reads untrusted input: the diff of the pull request and the repository's own instructions. pr-reviewer limits what such a session can do.
+
+The `claude-code` harness starts a session with `--tools <list>`, which removes every built-in tool that is not in the list. A review session needs no tools. Its prompt already holds the pull request description, the diff, the changed files and the related files, and the session runs in an empty temporary directory. So the default `review_tools = []` removes all built-in tools: no `Bash`, no file edits, no network fetches, and no file reads.
+
+To let review sessions read files, list the file-reading tools:
+
+```toml
+[harness]
+review_tools = ["Read", "Grep", "Glob"]
+```
+
+**These tools are not read-only in effect.** They are not confined to the session's directory. They can read any file that the user running pr-reviewer can read, including the keyfile and `config.toml` in the config directory. A prompt-injected diff could get such content into a public review comment. Enable them only for repositories whose authors you trust. Add `Bash`, `Edit`, `Write` or `WebFetch` only for a repository that you trust fully.
+
+pr-reviewer also starts every `claude-code` session with `--strict-mcp-config`, so the MCP servers of your Claude Code configuration are not available. `review_tools` lists built-in tools only. The hooks of your Claude Code configuration still run.
+
+`review_tools` covers every session that answers a pull request: the review, the final summary, the replies to comments and the `@pr-reviewer` commands. The first-touch "in progress" comment always runs with no tools.
+
+[Auto-fix](#reposauto_fix) sessions do not use this setting. They edit the managed clone, so they always run with a fixed set: `Read`, `Grep`, `Glob`, `Edit`, `Write` and `Bash`.
+
+The `codex` and `opencode` harnesses ignore `review_tools`.
 
 ### Harness selection guide
 
@@ -188,6 +213,7 @@ name = "your-repo"
 local_path = "/optional/existing/clone"
 harness = "claude-code"
 model = "claude-sonnet-4-6"
+review_tools = ["Read", "Grep", "Glob"]
 fork_policy = "ignore"
 trusted_authors = ["dependabot[bot]", "renovate[bot]"]
 ignore_paths = ["*.lock", "dist/**", "vendor/**"]
@@ -212,6 +238,7 @@ max_repairs_per_head = 1
 | `local_path` | Path to an existing local clone. If omitted, the repo is auto-cloned to `repos/{owner}/{name}/` in the config directory |
 | `harness` | Override the global harness for this repo |
 | `model` | Override the global model for this repo |
+| `review_tools` | Override `[harness] review_tools` for this repo. `[]` removes all tools even when the global setting lists some. See [Review session tools](#review-session-tools) |
 | `fork_policy` | How to handle PRs from forks (see [Fork policy](../explanation/how-a-review-works.md#fork-policy)) |
 | `trusted_authors` | Authors whose fork PRs get full context regardless of `fork_policy` |
 | `ignore_paths` | Glob patterns for files to exclude from context |

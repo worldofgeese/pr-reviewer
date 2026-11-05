@@ -567,6 +567,8 @@ impl ReviewEngine {
                 reasoning_effort,
                 working_dir: temp.path().to_path_buf(),
                 timeout_secs: IN_PROGRESS_COMMENT_TIMEOUT_SECS,
+                // The prompt carries only the PR title and author: no tools.
+                tools: Vec::new(),
             },
         )
         .await
@@ -1089,6 +1091,7 @@ impl ReviewEngine {
                 reasoning_effort,
                 working_dir: temp.path().to_path_buf(),
                 timeout_secs: self.config.harness.timeout_secs,
+                tools: repo_cfg.resolved_review_tools(&self.config),
             },
         )
         .await?;
@@ -2058,6 +2061,7 @@ impl ReviewEngine {
                 reasoning_effort,
                 working_dir: temp.path().to_path_buf(),
                 timeout_secs: self.config.harness.timeout_secs,
+                tools: repo_cfg.resolved_review_tools(&self.config),
             },
         )
         .await?;
@@ -2290,6 +2294,7 @@ impl ReviewEngine {
                 reasoning_effort,
                 working_dir: temp.path().to_path_buf(),
                 timeout_secs: self.config.harness.timeout_secs,
+                tools: repo_cfg.resolved_review_tools(&self.config),
             },
         )
         .await?;
@@ -2398,6 +2403,7 @@ impl ReviewEngine {
                 reasoning_effort,
                 working_dir: temp.path().to_path_buf(),
                 timeout_secs: self.config.harness.timeout_secs,
+                tools: repo_cfg.resolved_review_tools(&self.config),
             },
         )
         .await?;

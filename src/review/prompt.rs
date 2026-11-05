@@ -216,6 +216,7 @@ mod tests {
             harness: None,
             model: None,
             reasoning_effort: None,
+            review_tools: None,
             fork_policy: ForkPolicy::Ignore,
             trusted_authors: vec![],
             ignore_paths: vec![],

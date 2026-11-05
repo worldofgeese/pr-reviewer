@@ -68,7 +68,7 @@ It also sets `SIGNET_NO_HOOKS=1`, so that hooks of the Signet memory tool do not
 
 pr-reviewer starts the harness in a new temporary directory, not in a repository. The prompt goes in through standard input where the tool allows it, because a long prompt can exceed the limit for arguments. If the harness runs past `timeout_secs`, pr-reviewer fails the review. For a harness that reads standard input, such as `claude-code`, it also kills the process when the task ends, so no process stays behind.
 
-The `claude-code` harness runs with `--dangerously-skip-permissions`. It cannot ask a person, because nobody sits at the terminal.
+The `claude-code` harness runs with `--dangerously-skip-permissions`. It cannot ask a person, because nobody sits at the terminal. So pr-reviewer limits the tools instead. It starts every `claude-code` session with `--tools`, which removes each built-in tool that is not listed, and with `--strict-mcp-config`, which skips the MCP servers of your Claude Code configuration. A review session gets no built-in tools by default, so it cannot run a command, edit a file, read a file or fetch a URL, whatever the diff or the repository's instructions say. A repository can allow more tools with `review_tools`. See [Review session tools](../reference/configuration.md#review-session-tools). Auto-fix sessions edit the managed clone and use a fixed set of tools. Hooks of your Claude Code configuration still run; pr-reviewer only disables the hooks of the Signet memory tool.
 
 ## Fork pull requests
 
@@ -84,7 +84,7 @@ A **fork PR** comes from a repository that anyone can create. Its author control
 
 The measures above reduce risk. They do not make a review safe against everything:
 
-- **The harness is not in an operating system sandbox.** Scrubbing the environment and starting in a temporary directory do not stop a command that uses an absolute path. The harness can read any file that your user can read, and it can use the network. Run the daemon as a user that has nothing else to lose.
+- **The harness is not in an operating system sandbox.** Scrubbing the environment and starting in a temporary directory do not stop a command that uses an absolute path. With the default `review_tools = []`, a `claude-code` review session has no tool that could do this. A session that you give `Read`, `Grep` or `Glob` can read any file that your user can read, including the keyfile and `config.toml` in the config directory, and a prompt-injected diff could get the content into a public review comment. A session with `Bash` can also use the network. The `codex` and `opencode` harnesses ignore `review_tools`, so their sessions have this reach. Run the daemon as a user that has nothing else to lose.
 - **A prompt injection can still change a review.** A pull request can talk the AI tool into a wrong or an empty review. The review is advice. Treat it that way, especially for fork PRs.
 - **The keyfile and `config.toml` together decrypt a token without a passphrase.** Protect the whole config directory, including backups.
 - **The token has the rights you gave it.** Use a fine-grained token that is limited to the watched repositories, with the least rights that work.

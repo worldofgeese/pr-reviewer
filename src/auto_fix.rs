@@ -10,6 +10,15 @@ use crate::harness::spawn::{run_harness, HarnessRunRequest};
 use crate::repo_manager;
 use crate::store::db::Database;
 
+/// Built-in tools an auto-fix session may use. Unlike a review session, it
+/// reads the managed clone, edits files and runs the repository's tests. This
+/// set does not depend on the `review_tools` setting.
+const AUTO_FIX_TOOLS: [&str; 6] = ["Read", "Grep", "Glob", "Edit", "Write", "Bash"];
+
+fn auto_fix_tools() -> Vec<String> {
+    AUTO_FIX_TOOLS.iter().map(|t| t.to_string()).collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct AutoFixOutcome {
     pub scanned_sha: String,
@@ -74,6 +83,7 @@ pub async fn scan_and_open_pr(
             reasoning_effort: repo_cfg.resolved_reasoning_effort(config),
             working_dir: repo_path.clone(),
             timeout_secs: config.harness.timeout_secs,
+            tools: auto_fix_tools(),
         },
     )
     .await
@@ -277,6 +287,7 @@ pub async fn repair_marked_pr(
             reasoning_effort: repo_cfg.resolved_reasoning_effort(config),
             working_dir: repo_path.clone(),
             timeout_secs: config.harness.timeout_secs,
+            tools: auto_fix_tools(),
         },
     )
     .await
@@ -589,6 +600,23 @@ async fn cleanup_harness_artifacts(repo_path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auto_fix_sessions_get_their_own_explicit_tool_set() {
+        use crate::harness::claude_code::ClaudeCodeHarness;
+        use crate::harness::Harness;
+
+        let cmd = ClaudeCodeHarness.build_command(
+            "p",
+            "m",
+            None,
+            std::path::Path::new("."),
+            &super::auto_fix_tools(),
+        );
+        let args: Vec<_> = cmd.as_std().get_args().collect();
+        let at = args.iter().position(|a| *a == "--tools").unwrap();
+        assert_eq!(args[at + 1], "Read,Grep,Glob,Edit,Write,Bash");
+    }
+
     use super::{
         build_pr_body, build_pr_repair_prompt, find_existing_auto_fix_pr,
         has_matching_repair_marker, is_reviewable_auto_fix_path, is_same_repo_pr,
@@ -762,6 +790,7 @@ mod tests {
             harness: None,
             model: None,
             reasoning_effort: None,
+            review_tools: None,
             fork_policy: Default::default(),
             trusted_authors: vec![],
             ignore_paths: vec![],
@@ -787,6 +816,7 @@ mod tests {
             harness: None,
             model: None,
             reasoning_effort: None,
+            review_tools: None,
             fork_policy: Default::default(),
             trusted_authors: vec![],
             ignore_paths: vec![],
