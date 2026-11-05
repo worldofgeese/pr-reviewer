@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,7 +21,7 @@ use crate::github::client::{GitHubClient, ListPullsResult};
 use crate::github::pr;
 use crate::github::types::{IssueComment, PullRequest};
 use crate::review::engine::{ReviewEngine, ReviewOptions};
-use crate::store::db::{Database, WorkItem, WorkItemInsert};
+use crate::store::db::{Database, RequeuedClaims, WorkItem, WorkItemInsert};
 
 const RATE_LIMIT_TOTAL: u32 = 5000;
 const WORK_KIND_REVIEW_PR: &str = "review_pr";
@@ -34,7 +36,11 @@ pub async fn start(
     github: GitHubClient,
     daemonize: bool,
 ) -> Result<()> {
+    let config_dir = AppConfig::config_dir()?;
     if daemonize && std::env::var("PR_REVIEWER_INTERNAL_DAEMON").is_err() {
+        // Fail in the foreground, where the user can read the error, instead of in
+        // the detached child, whose output goes nowhere.
+        DaemonLock::ensure_free(&config_dir)?;
         let exe = std::env::current_exe().context("failed to resolve current executable")?;
         let child = tokio::process::Command::new(exe)
             .arg("start")
@@ -49,6 +55,8 @@ pub async fn start(
         return Ok(());
     }
 
+    // The lock lives until this function returns; the OS also drops it on a crash.
+    let (_lock, requeued) = take_over_queue(&config_dir, &db).await?;
     let pid_file = AppConfig::pid_file()?;
     write_pid(&pid_file)?;
     let started_at = chrono::Utc::now().to_rfc3339();
@@ -66,14 +74,11 @@ pub async fn start(
     let mut current_interval = base_interval;
     let mut no_change_rounds = 0u32;
 
-    let stale_age = config.harness.timeout_secs + 30;
-    let _ = db.sweep_stale_claims(stale_age).await?;
-    let stale_work = db.sweep_stale_work_items(stale_age).await?;
-    if stale_work > 0 {
+    if requeued.work_items > 0 || requeued.review_claims > 0 {
         tracing::warn!(
-            count = stale_work,
-            stale_age_secs = stale_age,
-            "requeued stale claimed work items"
+            work_items = requeued.work_items,
+            review_claims = requeued.review_claims,
+            "requeued work claimed by an earlier daemon process"
         );
     }
 
@@ -705,6 +710,83 @@ pub fn format_status(snapshot: &DaemonSnapshot) -> String {
     }
 
     out
+}
+
+/// An exclusive OS lock on the config directory. Holding it makes this process the
+/// only daemon for that directory. The lock belongs to the open file, so the OS
+/// releases it when the process exits or crashes and no stale lock is left behind.
+/// The lock is per host: it does not protect a config directory on a network file
+/// system that several hosts share.
+#[derive(Debug)]
+pub struct DaemonLock {
+    _file: File,
+}
+
+impl DaemonLock {
+    /// Takes the lock and records this process ID in the lock file, so a refused
+    /// daemon can name the holder.
+    pub fn acquire(config_dir: &Path) -> Result<Self> {
+        let mut file = Self::open_locked(config_dir)?;
+        file.set_len(0)
+            .and_then(|()| write!(file, "{}", std::process::id()))
+            .with_context(|| {
+                format!(
+                    "failed to record pid in {}",
+                    Self::path(config_dir).display()
+                )
+            })?;
+        Ok(Self { _file: file })
+    }
+
+    /// Fails like `acquire` when another daemon holds the lock, but keeps nothing.
+    pub fn ensure_free(config_dir: &Path) -> Result<()> {
+        Self::open_locked(config_dir).map(drop)
+    }
+
+    fn path(config_dir: &Path) -> PathBuf {
+        config_dir.join("daemon.lock")
+    }
+
+    fn open_locked(config_dir: &Path) -> Result<File> {
+        std::fs::create_dir_all(config_dir)
+            .with_context(|| format!("failed to create {}", config_dir.display()))?;
+        let path = Self::path(config_dir);
+        // No truncate: the holder's pid must survive a refused attempt.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("failed to open lock file {}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(TryLockError::WouldBlock) => {
+                let holder = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|data| data.trim().parse::<u32>().ok())
+                    .map(|pid| format!(" (pid {pid})"))
+                    .unwrap_or_default();
+                Err(anyhow!(
+                    "another pr-reviewer daemon already uses the config directory {}{holder}; \
+                     stop it first, or set PR_REVIEWER_CONFIG_DIR to run a second daemon",
+                    config_dir.display()
+                ))
+            }
+            Err(TryLockError::Error(err)) => {
+                Err(err).with_context(|| format!("failed to lock {}", path.display()))
+            }
+        }
+    }
+}
+
+/// Makes this process the daemon: takes the lock first, and only then touches the
+/// queue. A fresh process owns no claim, so everything still `claimed` belongs to an
+/// earlier process and goes back to `pending`, however recent the claim is.
+async fn take_over_queue(config_dir: &Path, db: &Database) -> Result<(DaemonLock, RequeuedClaims)> {
+    let lock = DaemonLock::acquire(config_dir)?;
+    let requeued = db.requeue_orphaned_claims().await?;
+    Ok((lock, requeued))
 }
 
 fn write_pid(path: &PathBuf) -> Result<()> {
@@ -1380,5 +1462,70 @@ mod tests {
             "CONTRIBUTOR"
         ))));
         assert!(!is_maintainer_comment(&test_issue_comment(None)));
+    }
+
+    async fn queue_with_one_claimed_item(dir: &Path) -> (Database, i64) {
+        let db = Database::new(dir.join("state.db")).await.expect("db");
+        let item = WorkItemInsert {
+            repo: "o/r".to_string(),
+            pr_number: 1,
+            head_sha: "abc".to_string(),
+            task_kind: WORK_KIND_REVIEW_PR.to_string(),
+            dedupe_key: "review:o/r:1:abc".to_string(),
+            payload: "{}".to_string(),
+            source_comment_id: None,
+        };
+        assert!(db.enqueue_work_item(item).await.expect("enqueue"));
+        let id = db.claim_pending_work_items(1).await.expect("claim")[0].id;
+        (db, id)
+    }
+
+    async fn status_of(db: &Database, id: i64) -> String {
+        db.get_work_item(id).await.unwrap().unwrap().status
+    }
+
+    #[tokio::test]
+    async fn a_second_daemon_is_refused_and_leaves_the_queue_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (db, id) = queue_with_one_claimed_item(dir.path()).await;
+        let holder = DaemonLock::acquire(dir.path()).expect("first daemon");
+
+        let err = take_over_queue(dir.path(), &db).await.unwrap_err();
+
+        let message = format!("{err:#}");
+        assert!(
+            message.contains(&dir.path().display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("pid {}", std::process::id())),
+            "{message}"
+        );
+        assert_eq!(status_of(&db, id).await, "claimed");
+        drop(holder);
+    }
+
+    #[tokio::test]
+    async fn a_daemon_starts_after_the_holder_drops_the_lock_and_requeues_its_claim() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (db, id) = queue_with_one_claimed_item(dir.path()).await;
+        drop(DaemonLock::acquire(dir.path()).expect("first daemon"));
+
+        let (_lock, requeued) = take_over_queue(dir.path(), &db)
+            .await
+            .expect("second daemon");
+
+        assert_eq!(requeued.work_items, 1);
+        assert_eq!(status_of(&db, id).await, "pending");
+    }
+
+    #[test]
+    fn ensure_free_fails_while_held_and_keeps_no_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let holder = DaemonLock::acquire(dir.path()).expect("holder");
+        assert!(DaemonLock::ensure_free(dir.path()).is_err());
+        drop(holder);
+        DaemonLock::ensure_free(dir.path()).expect("free after drop");
+        DaemonLock::acquire(dir.path()).expect("not held by ensure_free");
     }
 }

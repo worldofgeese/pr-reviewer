@@ -268,7 +268,7 @@ If duplicates are appearing:
 
 ### Review stuck in "in-progress" state after a crash
 
-When it starts, the daemon drops stale claims, which are older than `harness.timeout_secs` plus 30 seconds, and puts their work items back in the queue. The next worker run then performs the review. To clear a stale or failed claim for one pull request at once, run the review again with `--force`:
+When it starts, the daemon puts every `claimed` work item back in the queue and drops the unfinished review claims, whatever their age. The next worker run then performs the review. Restart the daemon to recover a stuck item. To clear a stale or failed claim for one pull request at once, run the review again with `--force`:
 
 ```bash
 pr-reviewer review owner/repo#42 --force
@@ -278,20 +278,15 @@ pr-reviewer review owner/repo#42 --force
 
 ## Daemon issues
 
-### Daemon won't start: "address already in use" or PID file exists
+### Daemon won't start: "another pr-reviewer daemon already uses the config directory"
 
-Check if the daemon is actually running:
+Another daemon holds the lock on this config directory. The error names the directory and, when readable, the process ID of the holder. Check it:
 
 ```bash
 pr-reviewer status
 ```
 
-If it reports no daemon, the PID file is stale. Remove it:
-
-```bash
-rm "$PR_REVIEWER_CONFIG_DIR/daemon.pid"   # or daemon.pid in your config directory
-pr-reviewer start --daemon
-```
+Stop that daemon, or give the second daemon its own directory with `PR_REVIEWER_CONFIG_DIR`. Do not delete `daemon.pid` or `daemon.lock`: the lock belongs to the running process, and the operating system releases it when that process exits, so a crash leaves nothing to clean up. A leftover `daemon.pid` does not block a start.
 
 ### "database is locked"
 

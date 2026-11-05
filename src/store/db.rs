@@ -147,6 +147,13 @@ pub struct PendingFinalization {
     pub last_reviewed_sha: String,
 }
 
+/// What `Database::requeue_orphaned_claims` put back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequeuedClaims {
+    pub work_items: usize,
+    pub review_claims: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkItemInsert {
     pub repo: String,
@@ -1475,25 +1482,6 @@ impl Database {
         .await
     }
 
-    pub async fn sweep_stale_work_items(&self, stale_age_secs: u64) -> Result<usize> {
-        self.run(move |conn| {
-            let changed = conn.execute(
-                r#"
-                UPDATE work_queue
-                   SET status = 'pending',
-                       error_message = 'requeued after stale claimed state',
-                       claimed_at = NULL
-                 WHERE status = 'claimed'
-                   AND claimed_at IS NOT NULL
-                   AND claimed_at < datetime('now', ?1)
-                "#,
-                params![format!("-{stale_age_secs} seconds")],
-            )?;
-            Ok(changed)
-        })
-        .await
-    }
-
     pub async fn list_work_queue(
         &self,
         repo: Option<&str>,
@@ -1649,18 +1637,34 @@ impl Database {
         .await
     }
 
-    /// Drops review claims that were never finished (status 'claimed') and are older
-    /// than `max_age_secs`. The row is deleted rather than marked failed: a failed row
-    /// is terminal for its dedupe key, so the work item that `sweep_stale_work_items`
-    /// requeues would be refused by `claim_review` and complete as `skipped:duplicate`
-    /// without a review. Completed and genuinely failed rows are left untouched.
-    pub async fn sweep_stale_claims(&self, max_age_secs: u64) -> Result<u64> {
+    /// Start-up recovery for the daemon that holds the daemon lock. A fresh process
+    /// owns no claim, so every `claimed` work item and every unfinished review claim
+    /// is an orphan of an earlier process, whatever its age. Work items go back to
+    /// `pending`. Review claims are deleted rather than marked failed: a failed row
+    /// is terminal for its dedupe key, so the requeued work item would be refused by
+    /// `claim_review` and complete as `skipped:duplicate` without a review.
+    /// Completed and genuinely failed rows, and work items in other states, are left
+    /// untouched. Both changes commit together or not at all.
+    pub async fn requeue_orphaned_claims(&self) -> Result<RequeuedClaims> {
         self.run(move |conn| {
-            let changed = conn.execute(
-                "DELETE FROM review_log WHERE status='claimed' AND created_at < datetime('now', ?1)",
-                params![format!("-{} seconds", max_age_secs)],
+            let tx = conn.unchecked_transaction()?;
+            let work_items = tx.execute(
+                r#"
+                UPDATE work_queue
+                   SET status = 'pending',
+                       error_message = 'requeued after daemon restart',
+                       claimed_at = NULL
+                 WHERE status = 'claimed'
+                "#,
+                [],
             )?;
-            Ok(changed as u64)
+            let review_claims =
+                tx.execute("DELETE FROM review_log WHERE status = 'claimed'", [])?;
+            tx.commit()?;
+            Ok(RequeuedClaims {
+                work_items,
+                review_claims,
+            })
         })
         .await
     }
@@ -2704,64 +2708,126 @@ mod tests {
         }
     }
 
-    async fn age_review_claim(db: &Database, key: &str) {
-        let key = key.to_string();
+    async fn work_item(db: &Database, key: &str) -> i64 {
+        let item = WorkItemInsert {
+            repo: "o/r".to_string(),
+            pr_number: 1,
+            head_sha: "abc".to_string(),
+            task_kind: "review_pr".to_string(),
+            dedupe_key: key.to_string(),
+            payload: "{}".to_string(),
+            source_comment_id: None,
+        };
+        assert!(db.enqueue_work_item(item).await.expect("enqueue"));
+        db.list_work_queue(None, None, 100)
+            .await
+            .expect("list")
+            .into_iter()
+            .find(|entry| entry.dedupe_key == key)
+            .expect("enqueued item")
+            .id
+    }
+
+    async fn status_of(db: &Database, id: i64) -> String {
+        db.get_work_item(id)
+            .await
+            .expect("get")
+            .expect("item")
+            .status
+    }
+
+    #[tokio::test]
+    async fn requeue_orphaned_claims_ignores_age_and_releases_the_claim_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::new(dir.path().join("state.db"))
+            .await
+            .expect("db");
+        let claim = sweep_test_claim("claimed-11s-ago");
+        let id = work_item(&db, "claimed-11s-ago").await;
+        assert!(db.claim_review(claim.clone()).await.expect("claim"));
+        db.claim_pending_work_items(1).await.expect("claim item");
         db.run(move |conn| {
             conn.execute(
-                "UPDATE review_log SET created_at = datetime('now', '-1 hour') WHERE dedupe_key = ?1",
-                params![key],
+                "UPDATE work_queue SET claimed_at = datetime('now', '-11 seconds') WHERE id = ?1",
+                params![id],
+            )?;
+            conn.execute(
+                "UPDATE review_log SET created_at = datetime('now', '-11 seconds')",
+                [],
             )?;
             Ok(())
         })
         .await
-        .expect("age claim");
+        .expect("age");
+
+        let requeued = db.requeue_orphaned_claims().await.expect("requeue");
+
+        assert_eq!(
+            requeued,
+            RequeuedClaims {
+                work_items: 1,
+                review_claims: 1
+            }
+        );
+        assert_eq!(status_of(&db, id).await, "pending");
+        assert!(db.claim_review(claim).await.expect("claim after requeue"));
     }
 
     #[tokio::test]
-    async fn swept_stale_claim_can_be_claimed_again() {
+    async fn requeue_orphaned_claims_keeps_completed_reviews_blocking() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Database::new(dir.path().join("state.db"))
             .await
             .expect("db");
-        let claim = sweep_test_claim("stale-then-requeued");
+        let claim = sweep_test_claim("completed");
 
         assert!(db.claim_review(claim.clone()).await.expect("claim"));
-        age_review_claim(&db, "stale-then-requeued").await;
-
-        assert_eq!(db.sweep_stale_claims(60).await.expect("sweep claims"), 1);
-        assert!(db.claim_review(claim).await.expect("claim after sweep"));
-    }
-
-    #[tokio::test]
-    async fn sweep_stale_claims_keeps_completed_reviews_blocking() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Database::new(dir.path().join("state.db"))
-            .await
-            .expect("db");
-        let claim = sweep_test_claim("completed-and-old");
-
-        assert!(db.claim_review(claim.clone()).await.expect("claim"));
-        db.complete_review("completed-and-old", 1, None, 1.0, 1, 1, None, None, None)
+        db.complete_review("completed", 1, None, 1.0, 1, 1, None, None, None)
             .await
             .expect("complete");
-        age_review_claim(&db, "completed-and-old").await;
 
-        assert_eq!(db.sweep_stale_claims(60).await.expect("sweep"), 0);
+        assert_eq!(
+            db.requeue_orphaned_claims()
+                .await
+                .expect("requeue")
+                .review_claims,
+            0
+        );
         assert!(!db.claim_review(claim).await.expect("blocked by completed"));
     }
 
     #[tokio::test]
-    async fn sweep_stale_claims_keeps_fresh_claims_blocking() {
+    async fn requeue_orphaned_claims_leaves_other_work_item_states_alone() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Database::new(dir.path().join("state.db"))
             .await
             .expect("db");
-        let claim = sweep_test_claim("fresh-claim");
+        let failed = work_item(&db, "failed").await;
+        let completed = work_item(&db, "completed").await;
+        let canceled = work_item(&db, "canceled").await;
+        let pending = work_item(&db, "pending").await;
+        let claimed = work_item(&db, "claimed").await;
+        db.fail_work_item(failed, "boom").await.expect("fail");
+        db.complete_work_item(completed).await.expect("complete");
+        assert!(db.cancel_work_item(canceled).await.expect("cancel"));
+        db.run(move |conn| {
+            conn.execute(
+                "UPDATE work_queue SET status = 'claimed', claimed_at = datetime('now') WHERE id = ?1",
+                params![claimed],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("claim one");
 
-        assert!(db.claim_review(claim.clone()).await.expect("claim"));
+        let requeued = db.requeue_orphaned_claims().await.expect("requeue");
 
-        assert_eq!(db.sweep_stale_claims(60).await.expect("sweep"), 0);
-        assert!(!db.claim_review(claim).await.expect("blocked by live claim"));
+        assert_eq!(requeued.work_items, 1);
+        assert_eq!(status_of(&db, claimed).await, "pending");
+        assert_eq!(status_of(&db, pending).await, "pending");
+        assert_eq!(status_of(&db, failed).await, "failed");
+        assert_eq!(status_of(&db, completed).await, "completed");
+        assert_eq!(status_of(&db, canceled).await, "canceled");
     }
 
     #[tokio::test]
@@ -3022,7 +3088,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn work_queue_supports_fail_retry_cancel_and_stale_sweep() {
+    async fn work_queue_supports_fail_retry_cancel_and_startup_requeue() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Database::new(dir.path().join("state.db"))
             .await
@@ -3061,7 +3127,13 @@ mod tests {
             )
             .expect("backdate claim");
         }
-        assert_eq!(db.sweep_stale_work_items(60).await.expect("sweep"), 1);
+        assert_eq!(
+            db.requeue_orphaned_claims()
+                .await
+                .expect("requeue")
+                .work_items,
+            1
+        );
         let swept = db.get_work_item(id).await.expect("get").expect("item");
         assert_eq!(swept.status, "pending");
 

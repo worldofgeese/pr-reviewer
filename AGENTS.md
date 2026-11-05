@@ -90,7 +90,7 @@ Simple `Confidence { level: ConfidenceLevel, justification: String }` where leve
 
 - DB claim lock prevents concurrent duplicate reviews (unique constraint on dedupe_key)
 - GitHub-side check prevents re-posting if DB is wiped (queries existing reviews for bot + SHA match)
-- Stale claims swept on daemon startup (older than harness timeout + 30s)
+- One daemon per config directory: an exclusive `flock` on `daemon.lock`, held for the process lifetime. Only after it holds the lock does start-up requeue every `claimed` work item and drop unfinished review claims (`requeue_orphaned_claims`)
 
 ### Self-Review Detection (engine.rs)
 
