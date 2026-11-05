@@ -51,14 +51,16 @@ A review session reads untrusted input: the diff of the pull request and the rep
 
 The `claude-code` harness starts a session with `--tools <list>`, which removes every built-in tool that is not in the list. A review session needs no tools. Its prompt already holds the pull request description, the diff, the changed files and the related files, and the session runs in an empty temporary directory. So the default `review_tools = []` removes all built-in tools: no `Bash`, no file edits, no network fetches, and no file reads.
 
-To let review sessions read files, list read-only tools:
+To let review sessions read files, list the file-reading tools:
 
 ```toml
 [harness]
 review_tools = ["Read", "Grep", "Glob"]
 ```
 
-These tools are not confined to the session's directory. They can read any file that the user running pr-reviewer can read. Add `Bash`, `Edit`, `Write` or `WebFetch` only for a repository that you trust fully.
+**These tools are not read-only in effect.** They are not confined to the session's directory. They can read any file that the user running pr-reviewer can read, including the keyfile and `config.toml` in the config directory. A prompt-injected diff could get such content into a public review comment. Enable them only for repositories whose authors you trust. Add `Bash`, `Edit`, `Write` or `WebFetch` only for a repository that you trust fully.
+
+pr-reviewer also starts every `claude-code` session with `--strict-mcp-config`, so the MCP servers of your Claude Code configuration are not available. `review_tools` lists built-in tools only. The hooks of your Claude Code configuration still run.
 
 `review_tools` covers every session that answers a pull request: the review, the final summary, the replies to comments and the `@pr-reviewer` commands. The first-touch "in progress" comment always runs with no tools.
 

@@ -31,6 +31,8 @@ impl Harness for ClaudeCodeHarness {
             .arg(model)
             .arg("--tools")
             .arg(tools.join(","))
+            // `--tools` covers built-in tools only; skip the user's MCP servers too.
+            .arg("--strict-mcp-config")
             .arg("--dangerously-skip-permissions")
             .arg("-p")
             .arg("-");
@@ -82,6 +84,7 @@ mod tests {
                 "m",
                 "--tools",
                 "Read",
+                "--strict-mcp-config",
                 "--dangerously-skip-permissions",
                 "-p",
                 "-"

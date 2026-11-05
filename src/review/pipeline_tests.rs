@@ -766,7 +766,8 @@ async fn stacked_child_does_not_repeat_its_parents_findings() {
 
     // A review session runs with no built-in tools by default.
     assert!(
-        run.args(1).contains("|--tools||--dangerously"),
+        run.args(1)
+            .contains("|--tools||--strict-mcp-config|--dangerously"),
         "{}",
         run.args(1)
     );
