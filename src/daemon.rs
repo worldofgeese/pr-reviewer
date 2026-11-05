@@ -1134,10 +1134,11 @@ fn should_skip_command_comment(
     bot_name: &str,
     authenticated_user: Option<&str>,
 ) -> bool {
-    if comment.user.login.eq_ignore_ascii_case(bot_name) {
-        return true;
-    }
-    if authenticated_user.is_some_and(|login| comment.user.login.eq_ignore_ascii_case(login)) {
+    if comment.is_own_comment(bot_name, authenticated_user) {
+        tracing::debug!(
+            comment_id = comment.id,
+            "skipping pr-reviewer's own comment"
+        );
         return true;
     }
     comment.user.is_bot()
@@ -1272,6 +1273,105 @@ mod tests {
             author_association: association.map(ToString::to_string),
             created_at: "2026-04-29T00:00:00Z".to_string(),
         }
+    }
+
+    fn comment_by(id: u64, login: &str, body: &str) -> IssueComment {
+        IssueComment {
+            id,
+            body: body.to_string(),
+            user: test_user(login),
+            author_association: Some("MEMBER".to_string()),
+            created_at: "2026-04-29T00:00:00Z".to_string(),
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = LogBuffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn marked_comment_from_daemon_account_is_skipped_and_logged() {
+        let logs = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        let comment = comment_by(
+            77,
+            "tao",
+            "done\n<!-- pr-reviewer-command-response command=fix pr=1 -->",
+        );
+
+        let skipped = tracing::subscriber::with_default(subscriber, || {
+            should_skip_command_comment(&comment, "pr-reviewer", Some("tao"))
+        });
+
+        assert!(skipped);
+        let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("DEBUG"), "{output}");
+        assert!(output.contains("77"), "{output}");
+    }
+
+    #[test]
+    fn unmarked_command_from_daemon_account_is_not_skipped() {
+        let comment = comment_by(1, "tao", "@pr-reviewer fix");
+
+        assert!(!should_skip_command_comment(
+            &comment,
+            "pr-reviewer",
+            Some("tao")
+        ));
+        assert_eq!(
+            parse_pr_reviewer_command(&comment.body, "pr-reviewer"),
+            Some(MaintainerCommand::Fix)
+        );
+        assert!(is_maintainer_comment(&comment));
+    }
+
+    #[test]
+    fn marker_from_another_account_is_not_an_own_comment() {
+        let comment = comment_by(
+            1,
+            "mallory",
+            "<!-- pr-reviewer-action:fix-required pr=1 sha=abc -->\n@pr-reviewer fix",
+        );
+
+        assert!(!should_skip_command_comment(
+            &comment,
+            "pr-reviewer",
+            Some("tao")
+        ));
+    }
+
+    #[test]
+    fn command_response_quoting_the_mention_does_not_retrigger_a_command() {
+        let comment = comment_by(
+            1,
+            "tao",
+            "@pr-reviewer fix\n\n<!-- pr-reviewer-command-response command=explain pr=1 source_comment=2 sha=abc -->",
+        );
+
+        assert!(should_skip_command_comment(
+            &comment,
+            "pr-reviewer",
+            Some("tao")
+        ));
     }
 
     #[test]
