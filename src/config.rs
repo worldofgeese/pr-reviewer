@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -565,7 +566,77 @@ impl Default for InstructionPrConfig {
     }
 }
 
+/// Ignore patterns that `pr-reviewer add` gives a newly registered repo.
+fn default_ignore_paths() -> Vec<String> {
+    ["*.lock", "vendor/**", "dist/**"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// Flatten a TOML table into `dotted.key = value` lines.
+fn flatten_toml(prefix: &str, table: &toml::Table, out: &mut BTreeMap<String, toml::Value>) {
+    for (key, value) in table {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value {
+            toml::Value::Table(inner) => flatten_toml(&path, inner, out),
+            other => {
+                out.insert(path, other.clone());
+            }
+        }
+    }
+}
+
 impl RepoConfig {
+    /// The entry that `pr-reviewer add` registers before applying flags.
+    pub fn registered_default(owner: String, name: String) -> Self {
+        Self {
+            owner,
+            name,
+            local_path: None,
+            harness: None,
+            model: None,
+            reasoning_effort: None,
+            fork_policy: ForkPolicy::default(),
+            trusted_authors: vec![],
+            ignore_paths: default_ignore_paths(),
+            custom_instructions: None,
+            gitnexus: default_gitnexus(),
+            workflow: vec![],
+            auto_fix: AutoFixConfig::default(),
+            review_policy: ReviewPolicyOverrides::default(),
+        }
+    }
+
+    /// Settings that differ from a freshly registered entry, as
+    /// `key = value` lines. Registration details (owner, name, local path)
+    /// are not settings. `remove` uses this to name what it discards.
+    pub fn non_default_settings(&self) -> Result<Vec<String>> {
+        let flatten = |repo: &Self| -> Result<BTreeMap<String, toml::Value>> {
+            let mut flat = BTreeMap::new();
+            match toml::Value::try_from(repo)? {
+                toml::Value::Table(table) => flatten_toml("", &table, &mut flat),
+                _ => return Err(anyhow!("repo config did not serialize to a table")),
+            }
+            for key in ["owner", "name", "local_path"] {
+                flat.remove(key);
+            }
+            Ok(flat)
+        };
+        let defaults = flatten(&Self::registered_default(
+            self.owner.clone(),
+            self.name.clone(),
+        ))?;
+        Ok(flatten(self)?
+            .into_iter()
+            .filter(|(key, value)| defaults.get(key) != Some(value))
+            .map(|(key, value)| format!("{key} = {value}"))
+            .collect())
+    }
+
     pub fn full_name(&self) -> String {
         format!("{}/{}", self.owner, self.name)
     }
@@ -821,6 +892,33 @@ mod tests {
             auto_fix: AutoFixConfig::default(),
             review_policy,
         }
+    }
+
+    #[test]
+    fn registered_default_has_no_non_default_settings() {
+        let repo = RepoConfig::registered_default("o".to_string(), "r".to_string());
+        assert!(repo.non_default_settings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn non_default_settings_names_each_changed_setting() {
+        let mut repo = RepoConfig::registered_default("o".to_string(), "r".to_string());
+        repo.local_path = Some(PathBuf::from("/somewhere"));
+        repo.auto_fix.enabled = true;
+        repo.custom_instructions = Some("be kind".to_string());
+        repo.trusted_authors = vec!["alice".to_string()];
+        repo.ignore_paths.push("docs/**".to_string());
+        repo.review_policy.max_review_cycles = Some(5);
+
+        let settings = repo.non_default_settings().unwrap();
+
+        assert!(settings.contains(&"auto_fix.enabled = true".to_string()));
+        assert!(settings.contains(&"custom_instructions = \"be kind\"".to_string()));
+        assert!(settings.contains(&"trusted_authors = [\"alice\"]".to_string()));
+        assert!(settings.contains(&"review_policy.max_review_cycles = 5".to_string()));
+        assert!(settings.iter().any(|s| s.starts_with("ignore_paths = ")));
+        // Registration details (owner, name, path) are not settings.
+        assert_eq!(settings.len(), 5, "{settings:?}");
     }
 
     #[test]
