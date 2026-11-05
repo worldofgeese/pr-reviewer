@@ -118,6 +118,10 @@ pub struct HarnessConfig {
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
+    /// Built-in tools that review sessions may use (claude-code harness only).
+    /// Empty by default: a review session gets everything it needs in its prompt.
+    #[serde(default)]
+    pub review_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -309,6 +313,9 @@ pub struct RepoConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Overrides `harness.review_tools` for this repository.
+    #[serde(default)]
+    pub review_tools: Option<Vec<String>>,
     #[serde(default)]
     pub fork_policy: ForkPolicy,
     #[serde(default)]
@@ -528,6 +535,7 @@ impl Default for HarnessConfig {
             model: default_model(),
             reasoning_effort: None,
             timeout_secs: default_timeout_secs(),
+            review_tools: Vec::new(),
         }
     }
 }
@@ -611,6 +619,7 @@ impl RepoConfig {
             harness: None,
             model: None,
             reasoning_effort: None,
+            review_tools: None,
             fork_policy: ForkPolicy::default(),
             trusted_authors: vec![],
             ignore_paths: default_ignore_paths(),
@@ -675,6 +684,12 @@ impl RepoConfig {
 
     pub fn resolved_reasoning_effort(&self, config: &AppConfig) -> Option<ReasoningEffort> {
         self.reasoning_effort.or(config.harness.reasoning_effort)
+    }
+
+    pub fn resolved_review_tools(&self, config: &AppConfig) -> Vec<String> {
+        self.review_tools
+            .clone()
+            .unwrap_or_else(|| config.harness.review_tools.clone())
     }
 
     pub fn resolved_review_policy(&self, config: &AppConfig) -> ReviewPolicy {
@@ -897,6 +912,7 @@ mod tests {
             harness: None,
             model: None,
             reasoning_effort: None,
+            review_tools: None,
             fork_policy: ForkPolicy::Ignore,
             trusted_authors: vec![],
             ignore_paths: vec![],
@@ -1020,6 +1036,29 @@ mod tests {
             "{err}"
         );
         assert_eq!(config.daemon.poll_interval_secs, 30);
+    }
+
+    #[test]
+    fn review_sessions_get_no_tools_unless_configured() {
+        let config = AppConfig::default();
+        let repo = repo(ReviewPolicyOverrides::default());
+        assert!(repo.resolved_review_tools(&config).is_empty());
+    }
+
+    #[test]
+    fn a_repo_can_override_the_global_review_tools() {
+        let config: AppConfig = toml::from_str(
+            "[harness]\nreview_tools = [\"Read\"]\n\n[[repos]]\nowner = \"o\"\nname = \"a\"\n\n[[repos]]\nowner = \"o\"\nname = \"b\"\nreview_tools = [\"Read\", \"Grep\"]\n\n[[repos]]\nowner = \"o\"\nname = \"c\"\nreview_tools = []\n",
+        )
+        .unwrap();
+        let tools: Vec<Vec<String>> = config
+            .repos
+            .iter()
+            .map(|r| r.resolved_review_tools(&config))
+            .collect();
+        assert_eq!(tools[0], ["Read"]);
+        assert_eq!(tools[1], ["Read", "Grep"]);
+        assert!(tools[2].is_empty());
     }
 
     #[test]

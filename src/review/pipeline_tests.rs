@@ -41,6 +41,7 @@ n=$(cat "$dir/count" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s' "$n" > "$dir/count"
 printf '%s' "$input" > "$dir/prompt-$n.md"
+printf '%s|' "$@" > "$dir/args-$n.txt"
 cat "$dir/response-$n.md"
 "#,
         )
@@ -89,6 +90,11 @@ impl Run {
 
     fn prompt(&self, n: usize) -> String {
         std::fs::read_to_string(self.dir.join(format!("prompt-{n}.md"))).unwrap()
+    }
+
+    /// The stub's command-line arguments for review prompt N, each ended by `|`.
+    fn args(&self, n: usize) -> String {
+        std::fs::read_to_string(self.dir.join(format!("args-{n}.txt"))).unwrap()
     }
 
     fn reviews_run(&self) -> usize {
@@ -388,6 +394,7 @@ fn config(run: &Run) -> Arc<AppConfig> {
         harness: None,
         model: None,
         reasoning_effort: None,
+        review_tools: None,
         fork_policy: Default::default(),
         trusted_authors: vec![],
         ignore_paths: vec![],
@@ -757,6 +764,12 @@ async fn stacked_child_does_not_repeat_its_parents_findings() {
         "{body}"
     );
 
+    // A review session runs with no built-in tools by default.
+    assert!(
+        run.args(1).contains("|--tools||--dangerously"),
+        "{}",
+        run.args(1)
+    );
     let prompt = run.prompt(1);
     assert!(prompt.contains("## Stacked PR"), "{prompt}");
     assert!(prompt.contains("head branch of #7"), "{prompt}");

@@ -27,7 +27,7 @@ src/
 ├── harness/
 │   ├── mod.rs           # Harness trait: build_command(), uses_stdin()
 │   ├── spawn.rs         # Sandboxed process spawning with env scrubbing, timeout, output capture
-│   ├── claude_code.rs   # claude --model <m> --dangerously-skip-permissions -p - (stdin piped)
+│   ├── claude_code.rs   # claude --model <m> --tools <list> --dangerously-skip-permissions -p - (stdin piped)
 │   ├── opencode.rs      # opencode run --model <m> --format json "<prompt>"
 │   └── codex.rs         # codex exec --model <m> --skip-git-repo-check --json "<prompt>"
 ├── review/

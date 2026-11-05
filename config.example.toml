@@ -4,6 +4,7 @@ repos = []
 default = "claude-code"
 model = "claude-sonnet-4-6"
 timeout_secs = 1800
+review_tools = []
 
 [github]
 passphrase_protected = false

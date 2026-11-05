@@ -37,6 +37,7 @@ impl Harness for CodexHarness {
         model: &str,
         reasoning_effort: Option<ReasoningEffort>,
         working_dir: &Path,
+        _tools: &[String],
     ) -> Command {
         let mut cmd = Command::new(codex_binary());
         cmd.arg("exec").arg("--model").arg(model);

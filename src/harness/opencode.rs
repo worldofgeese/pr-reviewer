@@ -22,6 +22,7 @@ impl Harness for OpencodeHarness {
         model: &str,
         _reasoning_effort: Option<ReasoningEffort>,
         _working_dir: &Path,
+        _tools: &[String],
     ) -> Command {
         let mut cmd = Command::new("opencode");
         cmd.arg("run")

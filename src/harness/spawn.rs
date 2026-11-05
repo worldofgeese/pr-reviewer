@@ -21,6 +21,8 @@ pub struct HarnessRunRequest {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub working_dir: PathBuf,
     pub timeout_secs: u64,
+    /// Built-in tools the session may use (claude-code only). Empty means none.
+    pub tools: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +95,7 @@ pub async fn run_harness(
         &req.model,
         req.reasoning_effort,
         &req.working_dir,
+        &req.tools,
     );
     command.current_dir(&req.working_dir);
 
