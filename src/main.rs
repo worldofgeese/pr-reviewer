@@ -645,10 +645,16 @@ fn parse_target(target: &str) -> Result<(String, u64)> {
 /// Warning that `remove` prints when the entry holds settings that a later
 /// `add` would not restore. `None` when every setting is default.
 fn discard_warning(repo: &RepoConfig) -> Option<String> {
-    let settings = repo.non_default_settings();
-    if settings.is_empty() {
-        return None;
-    }
+    let settings = match repo.non_default_settings() {
+        Ok(settings) if settings.is_empty() => return None,
+        Ok(settings) => settings,
+        Err(err) => {
+            return Some(format!(
+                "warning: could not compare {} with the defaults ({err}); its non-default settings may be lost",
+                repo.full_name()
+            ))
+        }
+    };
     let mut out = format!(
         "warning: removing {} discards these non-default settings; they are lost and `add` starts from defaults:",
         repo.full_name()
@@ -826,20 +832,8 @@ fn add_scanned_repos(cfg: &mut AppConfig, scan_dir: &Path) -> Result<()> {
 
         // owner is unknown from local scan; use placeholder and let user edit if needed.
         let repo = RepoConfig {
-            owner: "local".to_string(),
-            name: name.to_string(),
-            local_path: Some(path),
-            harness: None,
-            model: None,
-            reasoning_effort: None,
-            fork_policy: ForkPolicy::Ignore,
-            trusted_authors: vec![],
-            ignore_paths: vec![],
-            custom_instructions: None,
-            gitnexus: true,
-            workflow: vec![],
-            auto_fix: Default::default(),
-            review_policy: Default::default(),
+            local_path: Some(path.clone()),
+            ..RepoConfig::registered_default("local".to_string(), name.to_string())
         };
 
         if cfg

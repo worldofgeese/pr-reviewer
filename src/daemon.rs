@@ -621,11 +621,7 @@ pub async fn collect_status(db: &Database, config: &AppConfig) -> Result<DaemonS
         failed_work: work_queue.failed,
         claimed_reviews,
         watched_repos: config.repos.iter().map(|repo| repo.full_name()).collect(),
-        auto_fix_enabled: config
-            .repos
-            .iter()
-            .map(|repo| (repo.full_name(), repo.auto_fix.enabled))
-            .collect(),
+        auto_fix_enabled: auto_fix_by_repo(config),
         rate_limit: RateLimitSnapshot {
             limit: daemon.rate_limit_total,
             remaining: daemon.rate_remaining,
@@ -636,6 +632,14 @@ pub async fn collect_status(db: &Database, config: &AppConfig) -> Result<DaemonS
 
 fn try_acquire_worker_permit(semaphore: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
     semaphore.clone().try_acquire_owned().ok()
+}
+
+fn auto_fix_by_repo(config: &AppConfig) -> BTreeMap<String, bool> {
+    config
+        .repos
+        .iter()
+        .map(|repo| (repo.full_name(), repo.auto_fix.enabled))
+        .collect()
 }
 
 pub fn format_status(snapshot: &DaemonSnapshot) -> String {
@@ -709,7 +713,8 @@ pub fn format_status(snapshot: &DaemonSnapshot) -> String {
         for repo in &snapshot.watched_repos {
             let auto_fix = match snapshot.auto_fix_enabled.get(repo) {
                 Some(true) => "enabled",
-                _ => "disabled",
+                Some(false) => "disabled",
+                None => "unknown",
             };
             let _ = writeln!(out, "  - {repo}  auto_fix: {auto_fix}");
         }
@@ -1324,6 +1329,29 @@ mod tests {
         assert!(out.contains("remaining: 4321 / 5000"));
         assert!(out.contains("owner/repo  auto_fix: enabled"));
         assert!(out.contains("owner/other  auto_fix: disabled"));
+    }
+
+    #[test]
+    fn status_json_maps_each_watched_repo_to_its_auto_fix_state() {
+        let mut config = AppConfig::default();
+        for (name, enabled) in [("on", true), ("off", false)] {
+            let mut repo = RepoConfig::registered_default("o".to_string(), name.to_string());
+            repo.auto_fix.enabled = enabled;
+            config.repos.push(repo);
+        }
+        let snapshot = DaemonSnapshot {
+            watched_repos: config.repos.iter().map(|r| r.full_name()).collect(),
+            auto_fix_enabled: auto_fix_by_repo(&config),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&snapshot).unwrap();
+
+        assert_eq!(json["watched_repos"], serde_json::json!(["o/on", "o/off"]));
+        assert_eq!(
+            json["auto_fix_enabled"],
+            serde_json::json!({"o/on": true, "o/off": false})
+        );
     }
 
     #[test]

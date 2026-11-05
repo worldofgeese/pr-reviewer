@@ -614,26 +614,27 @@ impl RepoConfig {
     /// Settings that differ from a freshly registered entry, as
     /// `key = value` lines. Registration details (owner, name, local path)
     /// are not settings. `remove` uses this to name what it discards.
-    pub fn non_default_settings(&self) -> Vec<String> {
-        let flatten = |repo: &Self| {
+    pub fn non_default_settings(&self) -> Result<Vec<String>> {
+        let flatten = |repo: &Self| -> Result<BTreeMap<String, toml::Value>> {
             let mut flat = BTreeMap::new();
-            if let Ok(toml::Value::Table(table)) = toml::Value::try_from(repo) {
-                flatten_toml("", &table, &mut flat);
+            match toml::Value::try_from(repo)? {
+                toml::Value::Table(table) => flatten_toml("", &table, &mut flat),
+                _ => return Err(anyhow!("repo config did not serialize to a table")),
             }
             for key in ["owner", "name", "local_path"] {
                 flat.remove(key);
             }
-            flat
+            Ok(flat)
         };
         let defaults = flatten(&Self::registered_default(
             self.owner.clone(),
             self.name.clone(),
-        ));
-        flatten(self)
+        ))?;
+        Ok(flatten(self)?
             .into_iter()
             .filter(|(key, value)| defaults.get(key) != Some(value))
             .map(|(key, value)| format!("{key} = {value}"))
-            .collect()
+            .collect())
     }
 
     pub fn full_name(&self) -> String {
@@ -896,7 +897,7 @@ mod tests {
     #[test]
     fn registered_default_has_no_non_default_settings() {
         let repo = RepoConfig::registered_default("o".to_string(), "r".to_string());
-        assert!(repo.non_default_settings().is_empty());
+        assert!(repo.non_default_settings().unwrap().is_empty());
     }
 
     #[test]
@@ -909,7 +910,7 @@ mod tests {
         repo.ignore_paths.push("docs/**".to_string());
         repo.review_policy.max_review_cycles = Some(5);
 
-        let settings = repo.non_default_settings();
+        let settings = repo.non_default_settings().unwrap();
 
         assert!(settings.contains(&"auto_fix.enabled = true".to_string()));
         assert!(settings.contains(&"custom_instructions = \"be kind\"".to_string()));
