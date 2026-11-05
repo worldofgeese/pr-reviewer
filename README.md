@@ -26,6 +26,14 @@ You need a [Rust toolchain](https://rustup.rs/), a GitHub token and at least one
 cargo install --git https://github.com/worldofgeese/pr-reviewer --tag v0.2.0 --locked
 ```
 
+With Nix, you need no Rust toolchain. The repository is a flake. Until a tag carries a `flake.nix`, it follows `main`, not the released version. `git` and your AI CLI must still be on your `PATH`:
+
+```bash
+nix run github:worldofgeese/pr-reviewer -- --version
+```
+
+To use it from another flake, add `inputs.pr-reviewer.url = "github:worldofgeese/pr-reviewer"` and use `inputs.pr-reviewer.packages.${system}.default`.
+
 Then follow the [first review tutorial](docs/tutorials/getting-started.md). It takes about 15 minutes and ends with a real review on a repository that you can throw away.
 
 ## Documentation
