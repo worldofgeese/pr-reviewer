@@ -26,6 +26,14 @@ You need a [Rust toolchain](https://rustup.rs/), a GitHub token and at least one
 cargo install --git https://github.com/worldofgeese/pr-reviewer --tag v0.2.0 --locked
 ```
 
+With Nix, you need no Rust toolchain. The repository is a flake that builds the same code:
+
+```bash
+nix run github:worldofgeese/pr-reviewer/v0.2.1 -- --version
+```
+
+To use it from another flake, add `inputs.pr-reviewer.url = "github:worldofgeese/pr-reviewer"` and use `inputs.pr-reviewer.packages.${system}.default`.
+
 Then follow the [first review tutorial](docs/tutorials/getting-started.md). It takes about 15 minutes and ends with a real review on a repository that you can throw away.
 
 ## Documentation
