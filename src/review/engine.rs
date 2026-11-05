@@ -44,6 +44,10 @@ const IN_PROGRESS_COMMENT_MAX_CHARS: usize = 220;
 const GITHUB_COMMENT_MAX_CHARS: usize = 65_536;
 const GITHUB_COMMENT_TRUNCATION_NOTE: &str =
     "\n\n[truncated by pr-reviewer to fit GitHub's comment length limit]";
+/// Commit status posted when a re-review finds nothing new (`status_on_no_new_findings`).
+const STATUS_CONTEXT: &str = "pr-reviewer";
+const NO_NEW_FINDINGS_STATUS: &str = "Reviewed: no new findings";
+
 const SCREENSHOT_NOTE_TEXT: &str =
     "> **Note:** This PR touches UI files but no screenshots were referenced in the description. Consider adding visual previews for reviewers.";
 const DURABLE_REVIEW_MARKER_PREFIX: &str = "<!-- pr-reviewer-review";
@@ -1305,7 +1309,23 @@ impl ReviewEngine {
 
         let body = truncate_github_comment_body(&body);
 
+        let screenshot_note_added =
+            body.contains(SCREENSHOT_NOTE_TEXT) && !review_memory.already_noted_screenshot;
+        let nothing_new = review_memory.has_prior_bot_review
+            && inline_comments.is_empty()
+            && unmapped_comments.is_empty()
+            && !screenshot_note_added
+            && !finding_delta.is_novel()
+            && !has_structured_findings;
+
         if dry_run {
+            if nothing_new && policy.status_on_no_new_findings {
+                tracing::info!(
+                    repo = %repo_name,
+                    pr = pr_data.number,
+                    "dry run, commit status not posted: {NO_NEW_FINDINGS_STATUS}"
+                );
+            }
             tracing::info!(
                 repo = %repo_name,
                 pr = pr_data.number,
@@ -1342,15 +1362,7 @@ impl ReviewEngine {
             });
         }
 
-        let screenshot_note_added =
-            body.contains(SCREENSHOT_NOTE_TEXT) && !review_memory.already_noted_screenshot;
-        if review_memory.has_prior_bot_review
-            && inline_comments.is_empty()
-            && unmapped_comments.is_empty()
-            && !screenshot_note_added
-            && !finding_delta.is_novel()
-            && !has_structured_findings
-        {
+        if nothing_new {
             // Nothing new: findings still open stay in their threads, and an
             // earlier change request stays in force while one of them blocks.
             if policy.dismiss_stale_change_requests {
@@ -1382,6 +1394,9 @@ impl ReviewEngine {
                     gitnexus_hit_count,
                 )
                 .await?;
+            if policy.status_on_no_new_findings {
+                self.post_no_new_findings_status(repo_cfg, pr_data).await;
+            }
 
             return Ok(ReviewRunResult {
                 repo: repo_name,
@@ -1716,6 +1731,35 @@ impl ReviewEngine {
         )
         .await;
         Ok(true)
+    }
+
+    /// Post the opt-in `success` commit status for "reviewed, nothing new".
+    /// GitHub refusing it (missing scope, unknown sha) only logs a warning.
+    async fn post_no_new_findings_status(&self, repo_cfg: &RepoConfig, pr_data: &PullRequest) {
+        match self
+            .github
+            .create_commit_status(
+                &repo_cfg.owner,
+                &repo_cfg.name,
+                &pr_data.head.sha,
+                "success",
+                STATUS_CONTEXT,
+                NO_NEW_FINDINGS_STATUS,
+            )
+            .await
+        {
+            Ok(()) => tracing::info!(
+                repo = %repo_cfg.full_name(),
+                pr = pr_data.number,
+                "posted commit status: {NO_NEW_FINDINGS_STATUS}"
+            ),
+            Err(err) => tracing::warn!(
+                repo = %repo_cfg.full_name(),
+                pr = pr_data.number,
+                error = %err,
+                "failed to post commit status; the review is unaffected"
+            ),
+        }
     }
 
     /// Dismiss the bot's earlier REQUEST_CHANGES reviews when this review does

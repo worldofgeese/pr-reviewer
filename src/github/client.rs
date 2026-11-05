@@ -788,6 +788,39 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// Create a commit status on `sha`. Needs `repo:status` (classic token)
+    /// or "Commit statuses: write" (fine-grained token).
+    pub async fn create_commit_status(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+        state: &str,
+        context: &str,
+        description: &str,
+    ) -> Result<()> {
+        let path = format!("/repos/{owner}/{repo}/statuses/{sha}");
+        let resp = self
+            .request(Method::POST, &path)
+            .json(&serde_json::json!({
+                "state": state,
+                "context": context,
+                "description": description,
+            }))
+            .send_named()
+            .await
+            .context("GitHub create commit status failed")?;
+        self.update_rate_state(resp.headers());
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "GitHub create commit status failed ({status}): {body}"
+            ));
+        }
+        Ok(())
+    }
+
     /// `https://api.github.com/graphql`, or `https://HOST/api/graphql` for
     /// GitHub Enterprise Server, whose REST base ends in `/api/v3`.
     fn graphql_url(&self) -> String {
@@ -1204,6 +1237,35 @@ mod tests {
         let client = GitHubClient::new_with_base("t".into(), &server.url_str("")).unwrap();
         client
             .dismiss_review("o", "r", 5, 99, "fixed")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_commit_status_posts_status() {
+        use httptest::{matchers::*, responders::*, Expectation, Server};
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(all_of![
+                request::method_path("POST", "/repos/o/r/statuses/abc123"),
+                request::body(json_decoded(eq(serde_json::json!({
+                    "state": "success",
+                    "context": "pr-reviewer",
+                    "description": "Reviewed: no new findings",
+                })))),
+            ])
+            .respond_with(status_code(201)),
+        );
+        let client = GitHubClient::new_with_base("t".into(), &server.url_str("")).unwrap();
+        client
+            .create_commit_status(
+                "o",
+                "r",
+                "abc123",
+                "success",
+                "pr-reviewer",
+                "Reviewed: no new findings",
+            )
             .await
             .unwrap();
     }

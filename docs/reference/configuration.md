@@ -131,6 +131,7 @@ max_prompt_bytes = 204800
 | `skip_unchanged_diff` | `true` | Skip the review of a push that leaves the PR's own diff unchanged, such as a rebase. See [Stacked PRs](../explanation/how-a-review-works.md#stacked-prs). |
 | `stack_aware` | `true` | Detect stacked PRs, tell the reviewer about the parent PR, and drop findings that a lower PR already tracks. |
 | `dismiss_stale_change_requests` | `true` | Dismiss the bot's earlier `REQUEST_CHANGES` reviews when no blocking finding is open. |
+| `status_on_no_new_findings` | `false` | When a re-review finds nothing new (`skipped:no-novel-findings`), post a `success` commit status on the head commit: context `pr-reviewer`, description `Reviewed: no new findings`. A merge gate can then tell "reviewed, nothing new" from "not reviewed yet". It does not mean that no blocking finding is open; gates should also read the PR's review state. Needs the `repo:status` scope (classic token) or "Commit statuses: write" (fine-grained token). If GitHub refuses the status, the bot logs a warning and the review is unaffected. With `dry_run`, the bot logs the status instead. |
 
 ### Tuning context limits
 
@@ -216,7 +217,7 @@ max_repairs_per_head = 1
 | `ignore_paths` | Glob patterns for files to exclude from context |
 | `custom_instructions` | Free-text hints appended to the review prompt |
 | `gitnexus` | Whether to include GitNexus impact analysis in context. Default: `true` (best-effort; gracefully skipped if unavailable) |
-| `review_policy` | Per-repo overrides of `max_review_cycles`, `critical_finding_kinds`, `skip_unchanged_diff`, `stack_aware` and `dismiss_stale_change_requests`. Unset fields use `[defaults]`. |
+| `review_policy` | Per-repo overrides of `max_review_cycles`, `critical_finding_kinds`, `skip_unchanged_diff`, `stack_aware`, `dismiss_stale_change_requests` and `status_on_no_new_findings`. Unset fields use `[defaults]`. |
 
 ```toml
 [repos.review_policy]

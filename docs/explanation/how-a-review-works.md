@@ -67,6 +67,10 @@ A fix can land in a file other than the one the finding is on, for example when 
 
 Set `max_review_cycles = 0` to keep the old behavior: every review cycle posts every finding inline.
 
+### A review with nothing new
+
+When a PR already has a pr-reviewer review and a new review cycle finds nothing new to post, the bot posts no review and no comment, and the review ends as `skipped:no-novel-findings`. A merge gate that reads GitHub cannot tell this case from "not reviewed yet". With `status_on_no_new_findings` turned on, the bot also posts a commit status on the head commit: context `pr-reviewer`, state `success`, description `Reviewed: no new findings`. The setting is off by default, and a review that posts findings never posts this status, and neither does any other skip, such as `skipped:unchanged-diff`. The status says only that the head was reviewed and nothing new was found. It does not say that no blocking finding is open: an earlier change request stays in force while a blocking finding is open, so a merge gate should also read the PR's review state. If GitHub refuses the status, the bot logs a warning and the review still ends the same way. See [Configuration](../reference/configuration.md#defaults).
+
 ---
 
 ## Stacked PRs

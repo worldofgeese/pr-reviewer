@@ -160,6 +160,8 @@ struct GitHubState {
     /// Status for `GET .../reviews` and `POST .../reviews` (200 = works).
     list_reviews_status: u16,
     post_review_status: u16,
+    /// Status for `POST .../statuses/<sha>` (201 = created).
+    commit_status_status: u16,
     /// Root comment ids of the review threads a human resolved.
     resolved: Vec<u64>,
 }
@@ -175,6 +177,7 @@ impl GitHubState {
             heads: vec![],
             list_reviews_status: 200,
             post_review_status: 200,
+            commit_status_status: 201,
             resolved: vec![],
         }
     }
@@ -186,6 +189,8 @@ struct MockGitHub {
     /// The bodies of the PR's issue comments, in creation order.
     issue_comments: Arc<Mutex<Vec<Value>>>,
     dismissed: Arc<Mutex<Vec<String>>>,
+    /// The bodies of the commit status requests for the PR's head sha.
+    statuses: Arc<Mutex<Vec<Value>>>,
 }
 
 fn mock_github(state: GitHubState) -> MockGitHub {
@@ -344,11 +349,31 @@ fn mock_github(state: GitHubState) -> MockGitHub {
             .respond_with(json_encoded(json!({}))),
         );
     }
+    let statuses = Arc::new(Mutex::new(Vec::new()));
+    let sink = statuses.clone();
+    server.expect(
+        Expectation::matching(all_of![
+            request::method_path(
+                "POST",
+                format!(
+                    "/repos/o/r/statuses/{}",
+                    state.pr["head"]["sha"].as_str().unwrap()
+                )
+            ),
+            request::body(json_decoded(move |body: &Value| {
+                sink.lock().unwrap().push(body.clone());
+                true
+            })),
+        ])
+        .times(..)
+        .respond_with(status_code(state.commit_status_status).body("{}")),
+    );
     MockGitHub {
         server,
         posted_reviews,
         issue_comments,
         dismissed,
+        statuses,
     }
 }
 
@@ -457,6 +482,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        commit_status_status: 201,
         resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
@@ -510,6 +536,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        commit_status_status: 201,
         resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
@@ -572,6 +599,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        commit_status_status: 201,
         resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
@@ -623,6 +651,7 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         heads: vec![],
         list_reviews_status: 200,
         post_review_status: 200,
+        commit_status_status: 201,
         resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 7).await;
@@ -713,6 +742,7 @@ async fn stacked_child_does_not_repeat_its_parents_findings() {
         )],
         list_reviews_status: 200,
         post_review_status: 200,
+        commit_status_status: 201,
         resolved: vec![],
     });
     let result = review_round(&config, &db, &gh, 8).await;
@@ -1205,4 +1235,145 @@ async fn a_review_claimed_before_a_restart_is_reviewed_after_the_start_up_requeu
     assert_eq!(after.status, "completed");
     assert_eq!(gh.posted_reviews.lock().unwrap().len(), 1);
     assert_eq!(run.reviews_run(), 1);
+}
+
+/// Round 1 posts a blocking finding on `s1`; round 2 rebases to `s2` with the
+/// reviewer finding nothing new. Returns round 2's result and the statuses
+/// GitHub received.
+async fn re_review_with_nothing_new(
+    name: &str,
+    configure: impl FnOnce(&mut AppConfig),
+    status_response: u16,
+    dry_run: bool,
+) -> (crate::review::engine::ReviewRunResult, Vec<Value>) {
+    let run = Run::new(name);
+    let mut app = (*config(&run)).clone();
+    configure(&mut app);
+    let config = Arc::new(app);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    run.respond(
+        1,
+        review_json(
+            "request_changes",
+            json!([{"file": "src/fetch.rs", "line": 2, "body": BLOCKER, "severity": "blocking",
+                    "finding_kind": "correctness", "evidence_note": "Line 2."}]),
+        ),
+    );
+    run.respond(2, review_json("comment", json!([])));
+
+    let binary = "diff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n";
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        format!("{}{binary}", simple_diff("retry_forever();")),
+    ));
+    assert_eq!(review_round(&config, &db, &gh, 7).await.status, "completed");
+    assert!(
+        gh.statuses.lock().unwrap().is_empty(),
+        "a review that posts findings posts no status"
+    );
+
+    // A rebase: same change, new line numbers. The binary file makes the
+    // review run anyway, and the reviewer finds nothing new.
+    let rebased = format!(
+        "{}{binary}",
+        simple_diff("retry_forever();").replace("@@ -1,3 +1,4 @@", "@@ -20,3 +20,4 @@")
+    );
+    let mut state = GitHubState::new(pr_json(7, "s2", "feat/fetch", "main"), rebased.clone());
+    state.compare = Some(("s1".into(), "s2".into(), rebased));
+    state.reviews = vec![bot_review(100, "s1", "CHANGES_REQUESTED")];
+    state.review_comments = vec![bot_comment(201, 2, BLOCKER)];
+    state.commit_status_status = status_response;
+    let gh = mock_github(state);
+    let client = GitHubClient::new_with_base("test-token".into(), &gh.server.url_str("")).unwrap();
+    let mut engine = ReviewEngine::new(config.clone(), client, db.clone());
+    engine.init().await;
+    let options = ReviewOptions {
+        dry_run,
+        ..ReviewOptions::default()
+    };
+    let result = engine
+        .review_pr(&config.repos[0], 7, options)
+        .await
+        .unwrap();
+    let statuses = gh.statuses.lock().unwrap().clone();
+    (result, statuses)
+}
+
+fn no_new_findings_status() -> Value {
+    json!({"state": "success", "context": "pr-reviewer", "description": "Reviewed: no new findings"})
+}
+
+#[tokio::test]
+async fn a_re_review_with_nothing_new_posts_a_status_when_the_setting_is_on() {
+    let (result, statuses) = re_review_with_nothing_new(
+        "status-on",
+        |c| c.defaults.status_on_no_new_findings = true,
+        201,
+        false,
+    )
+    .await;
+    assert_eq!(result.status, "skipped:no-novel-findings");
+    assert_eq!(statuses, vec![no_new_findings_status()]);
+}
+
+#[tokio::test]
+async fn a_re_review_with_nothing_new_posts_no_status_by_default() {
+    let (result, statuses) = re_review_with_nothing_new("status-off", |_| {}, 201, false).await;
+    assert_eq!(result.status, "skipped:no-novel-findings");
+    assert!(statuses.is_empty());
+}
+
+#[tokio::test]
+async fn a_repo_override_turns_the_status_on_over_a_default_off() {
+    let (_, statuses) = re_review_with_nothing_new(
+        "status-repo-on",
+        |c| c.repos[0].review_policy.status_on_no_new_findings = Some(true),
+        201,
+        false,
+    )
+    .await;
+    assert_eq!(statuses, vec![no_new_findings_status()]);
+}
+
+#[tokio::test]
+async fn a_repo_override_turns_the_status_off_over_a_default_on() {
+    let (result, statuses) = re_review_with_nothing_new(
+        "status-repo-off",
+        |c| {
+            c.defaults.status_on_no_new_findings = true;
+            c.repos[0].review_policy.status_on_no_new_findings = Some(false);
+        },
+        201,
+        false,
+    )
+    .await;
+    assert_eq!(result.status, "skipped:no-novel-findings");
+    assert!(statuses.is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_status_does_not_fail_the_review() {
+    let (result, statuses) = re_review_with_nothing_new(
+        "status-403",
+        |c| c.defaults.status_on_no_new_findings = true,
+        403,
+        false,
+    )
+    .await;
+    assert_eq!(result.status, "skipped:no-novel-findings");
+    assert_eq!(statuses.len(), 1, "the status was tried once");
+}
+
+#[tokio::test]
+async fn a_dry_run_posts_no_status() {
+    let (result, statuses) = re_review_with_nothing_new(
+        "status-dry-run",
+        |c| c.defaults.status_on_no_new_findings = true,
+        201,
+        true,
+    )
+    .await;
+    assert_eq!(result.status, "completed:dry-run");
+    assert!(statuses.is_empty());
 }

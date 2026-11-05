@@ -189,6 +189,12 @@ pub struct DefaultsConfig {
     /// request stays on the PR after its findings are fixed.
     #[serde(default = "default_true")]
     pub dismiss_stale_change_requests: bool,
+    /// Post a `success` commit status on the head commit when a re-review
+    /// finds nothing new, so a merge gate can tell "reviewed, nothing new"
+    /// from "not reviewed yet". Needs `repo:status` (classic token) or
+    /// "Commit statuses: write" (fine-grained token).
+    #[serde(default)]
+    pub status_on_no_new_findings: bool,
 }
 
 /// Per-repo overrides for the review policy. Unset fields use `[defaults]`.
@@ -204,6 +210,8 @@ pub struct ReviewPolicyOverrides {
     pub stack_aware: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismiss_stale_change_requests: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_on_no_new_findings: Option<bool>,
 }
 
 impl ReviewPolicyOverrides {
@@ -220,6 +228,7 @@ pub struct ReviewPolicy {
     pub skip_unchanged_diff: bool,
     pub stack_aware: bool,
     pub dismiss_stale_change_requests: bool,
+    pub status_on_no_new_findings: bool,
 }
 
 impl Default for ReviewPolicy {
@@ -236,6 +245,7 @@ impl DefaultsConfig {
             skip_unchanged_diff: self.skip_unchanged_diff,
             stack_aware: self.stack_aware,
             dismiss_stale_change_requests: self.dismiss_stale_change_requests,
+            status_on_no_new_findings: self.status_on_no_new_findings,
         }
     }
 }
@@ -550,6 +560,7 @@ impl Default for DefaultsConfig {
             skip_unchanged_diff: true,
             stack_aware: true,
             dismiss_stale_change_requests: true,
+            status_on_no_new_findings: false,
         }
     }
 }
@@ -613,6 +624,9 @@ impl RepoConfig {
             dismiss_stale_change_requests: overrides
                 .dismiss_stale_change_requests
                 .unwrap_or(defaults.dismiss_stale_change_requests),
+            status_on_no_new_findings: overrides
+                .status_on_no_new_findings
+                .unwrap_or(defaults.status_on_no_new_findings),
         }
     }
 }
@@ -831,6 +845,7 @@ mod tests {
         assert!(policy.skip_unchanged_diff);
         assert!(policy.stack_aware);
         assert!(policy.dismiss_stale_change_requests);
+        assert!(!policy.status_on_no_new_findings);
         assert_eq!(
             policy.critical_finding_kinds,
             vec![
