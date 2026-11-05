@@ -77,13 +77,23 @@ pr-reviewer remove <owner/repo> [--purge]
 
 Stops watching a repository. With `--purge`, it also deletes the managed clone. `--purge` has no effect on a repository that uses `--path`.
 
+`remove` deletes the whole entry in `config.toml`, including its `[repos.auto_fix]` block. A later `add` starts from the default settings. Before it removes the entry, `remove` compares the entry with a newly registered one. It prints a warning on standard output that lists each non-default setting that it discards, for example:
+
+```text
+warning: removing owner/repo discards these non-default settings; they are lost and `add` starts from defaults:
+  auto_fix.enabled = true
+  custom_instructions = "Check the migrations"
+```
+
+The list covers `harness`, `model`, `reasoning_effort`, `fork_policy`, `trusted_authors`, `ignore_paths`, `custom_instructions`, `gitnexus`, `workflow`, `auto_fix.*` and `review_policy.*`. It does not list the owner, the name or `--path`. If every setting is default, `remove` prints no warning. `remove` does not ask for confirmation. It does not touch the review history.
+
 ## `list`
 
 ```bash
 pr-reviewer list
 ```
 
-Prints one line for each watched repository with its clone path, harness, model, reasoning effort and fork policy. A managed clone has the mark `[managed]`.
+Prints one line for each watched repository with its clone path, harness, model, reasoning effort, fork policy and auto-fix state (`auto_fix=enabled` or `auto_fix=disabled`). A managed clone has the mark `[managed]`. `list` has no JSON form.
 
 ## `cleanup`
 
@@ -146,7 +156,7 @@ Sends `SIGTERM` to the process ID in `daemon.pid` and removes the file. Do not u
 pr-reviewer status [--json]
 ```
 
-Shows whether the daemon runs, its process ID, start time, uptime and last heartbeat, the counts of the work queue, the last GitHub rate limit and the watched repositories. `--json` prints the same data as JSON.
+Shows whether the daemon runs, its process ID, start time, uptime and last heartbeat, the counts of the work queue, the last GitHub rate limit and the watched repositories. Each watched repository shows its auto-fix state (`auto_fix: enabled` or `auto_fix: disabled`). `--json` prints the same data as JSON: `watched_repos` stays a list of names, and `auto_fix_enabled` maps each name to `true` or `false`.
 
 ## `queue`
 

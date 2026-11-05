@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -572,6 +572,8 @@ pub struct DaemonSnapshot {
     pub failed_work: i64,
     pub claimed_reviews: i64,
     pub watched_repos: Vec<String>,
+    /// Auto-fix state per watched repo, keyed by `owner/name`.
+    pub auto_fix_enabled: BTreeMap<String, bool>,
     pub rate_limit: RateLimitSnapshot,
 }
 
@@ -619,6 +621,11 @@ pub async fn collect_status(db: &Database, config: &AppConfig) -> Result<DaemonS
         failed_work: work_queue.failed,
         claimed_reviews,
         watched_repos: config.repos.iter().map(|repo| repo.full_name()).collect(),
+        auto_fix_enabled: config
+            .repos
+            .iter()
+            .map(|repo| (repo.full_name(), repo.auto_fix.enabled))
+            .collect(),
         rate_limit: RateLimitSnapshot {
             limit: daemon.rate_limit_total,
             remaining: daemon.rate_remaining,
@@ -700,7 +707,11 @@ pub fn format_status(snapshot: &DaemonSnapshot) -> String {
         let _ = writeln!(out, "  (none)");
     } else {
         for repo in &snapshot.watched_repos {
-            let _ = writeln!(out, "  - {repo}");
+            let auto_fix = match snapshot.auto_fix_enabled.get(repo) {
+                Some(true) => "enabled",
+                _ => "disabled",
+            };
+            let _ = writeln!(out, "  - {repo}  auto_fix: {auto_fix}");
         }
     }
 
@@ -1288,7 +1299,11 @@ mod tests {
             claimed_work: 1,
             failed_work: 0,
             claimed_reviews: 5,
-            watched_repos: vec!["owner/repo".to_string()],
+            watched_repos: vec!["owner/repo".to_string(), "owner/other".to_string()],
+            auto_fix_enabled: BTreeMap::from([
+                ("owner/repo".to_string(), true),
+                ("owner/other".to_string(), false),
+            ]),
             rate_limit: RateLimitSnapshot {
                 limit: Some(5000),
                 remaining: Some(4321),
@@ -1307,7 +1322,8 @@ mod tests {
         assert!(out.contains("claimed work: 1"));
         assert!(out.contains("claimed: 5"));
         assert!(out.contains("remaining: 4321 / 5000"));
-        assert!(out.contains("owner/repo"));
+        assert!(out.contains("owner/repo  auto_fix: enabled"));
+        assert!(out.contains("owner/other  auto_fix: disabled"));
     }
 
     #[test]

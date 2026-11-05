@@ -238,24 +238,12 @@ async fn main() -> Result<()> {
 
             let fork_policy = parse_fork_policy(&args.fork_policy)?;
             let repo_cfg = RepoConfig {
-                owner,
-                name,
                 local_path,
                 harness: args.harness,
                 model: args.model,
                 reasoning_effort: args.reasoning_effort,
                 fork_policy,
-                trusted_authors: vec![],
-                ignore_paths: vec![
-                    "*.lock".to_string(),
-                    "vendor/**".to_string(),
-                    "dist/**".to_string(),
-                ],
-                custom_instructions: None,
-                gitnexus: true,
-                workflow: vec![],
-                auto_fix: Default::default(),
-                review_policy: Default::default(),
+                ..RepoConfig::registered_default(owner, name)
             };
             let repo_name = repo_cfg.full_name();
             cfg.add_repo(repo_cfg.clone())?;
@@ -276,6 +264,9 @@ async fn main() -> Result<()> {
         Commands::Remove { repo, purge } => {
             let mut cfg = AppConfig::load_or_default()?;
             let was_managed = cfg.get_repo(&repo).map(|r| r.is_managed()).unwrap_or(false);
+            if let Some(warning) = cfg.get_repo(&repo).and_then(discard_warning) {
+                println!("{warning}");
+            }
             if cfg.remove_repo(&repo) {
                 cfg.save()?;
                 println!("removed {repo}");
@@ -309,26 +300,7 @@ async fn main() -> Result<()> {
                 println!("no repos configured");
             } else {
                 for repo in &cfg.repos {
-                    let harness = repo.resolved_harness(&cfg);
-                    let model = repo.resolved_model(&cfg);
-                    let reasoning_effort = repo
-                        .resolved_reasoning_effort(&cfg)
-                        .map(|effort| effort.to_string())
-                        .unwrap_or_else(|| "-".to_string());
-                    let path = repo
-                        .effective_local_path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| "(unresolved)".to_string());
-                    let managed = if repo.is_managed() { " [managed]" } else { "" };
-                    println!(
-                        "{}  path={}{managed}  harness={}  model={}  reasoning={}  fork_policy={:?}",
-                        repo.full_name(),
-                        path,
-                        harness,
-                        model,
-                        reasoning_effort,
-                        repo.fork_policy
-                    );
+                    println!("{}", format_list_line(repo, &cfg));
                 }
             }
         }
@@ -670,6 +642,52 @@ fn parse_target(target: &str) -> Result<(String, u64)> {
     Ok((repo.to_string(), pr_number))
 }
 
+/// Warning that `remove` prints when the entry holds settings that a later
+/// `add` would not restore. `None` when every setting is default.
+fn discard_warning(repo: &RepoConfig) -> Option<String> {
+    let settings = repo.non_default_settings();
+    if settings.is_empty() {
+        return None;
+    }
+    let mut out = format!(
+        "warning: removing {} discards these non-default settings; they are lost and `add` starts from defaults:",
+        repo.full_name()
+    );
+    for setting in settings {
+        out.push_str("\n  ");
+        out.push_str(&setting);
+    }
+    Some(out)
+}
+
+fn format_list_line(repo: &RepoConfig, cfg: &AppConfig) -> String {
+    let reasoning_effort = repo
+        .resolved_reasoning_effort(cfg)
+        .map(|effort| effort.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let path = repo
+        .effective_local_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(unresolved)".to_string());
+    let managed = if repo.is_managed() { " [managed]" } else { "" };
+    format!(
+        "{}  path={path}{managed}  harness={}  model={}  reasoning={reasoning_effort}  fork_policy={:?}  auto_fix={}",
+        repo.full_name(),
+        repo.resolved_harness(cfg),
+        repo.resolved_model(cfg),
+        repo.fork_policy,
+        auto_fix_state(repo.auto_fix.enabled)
+    )
+}
+
+fn auto_fix_state(enabled: bool) -> &'static str {
+    if enabled {
+        "enabled"
+    } else {
+        "disabled"
+    }
+}
+
 fn parse_fork_policy(raw: &str) -> Result<ForkPolicy> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "ignore" => Ok(ForkPolicy::Ignore),
@@ -842,5 +860,42 @@ fn short_sha(sha: &str) -> &str {
         sha
     } else {
         &sha[..8]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo(name: &str) -> RepoConfig {
+        RepoConfig::registered_default("o".to_string(), name.to_string())
+    }
+
+    #[test]
+    fn remove_warning_names_discarded_auto_fix_setting() {
+        let mut repo = repo("r");
+        repo.auto_fix.enabled = true;
+
+        let warning = discard_warning(&repo).expect("warning");
+
+        assert!(warning.contains("o/r"));
+        assert!(warning.contains("lost"));
+        assert!(warning.contains("auto_fix.enabled = true"));
+    }
+
+    #[test]
+    fn remove_warning_is_absent_when_all_settings_are_default() {
+        assert_eq!(discard_warning(&repo("r")), None);
+    }
+
+    #[test]
+    fn list_line_shows_auto_fix_state_per_repo() {
+        let cfg = AppConfig::default();
+        let mut on = repo("on");
+        on.auto_fix.enabled = true;
+        let off = repo("off");
+
+        assert!(format_list_line(&on, &cfg).contains("auto_fix=enabled"));
+        assert!(format_list_line(&off, &cfg).contains("auto_fix=disabled"));
     }
 }
