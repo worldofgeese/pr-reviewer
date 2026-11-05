@@ -26,7 +26,7 @@ You need a [Rust toolchain](https://rustup.rs/), a GitHub token and at least one
 cargo install --git https://github.com/worldofgeese/pr-reviewer --tag v0.2.0 --locked
 ```
 
-With Nix, you need no Rust toolchain. The repository is a flake that builds the same code:
+With Nix, you need no Rust toolchain. The repository is a flake. Until a tag carries a `flake.nix`, it follows `main`, not the released version. `git` and your AI CLI must still be on your `PATH`:
 
 ```bash
 nix run github:worldofgeese/pr-reviewer -- --version
