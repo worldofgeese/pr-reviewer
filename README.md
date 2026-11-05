@@ -29,7 +29,7 @@ cargo install --git https://github.com/worldofgeese/pr-reviewer --tag v0.2.0 --l
 With Nix, you need no Rust toolchain. The repository is a flake that builds the same code:
 
 ```bash
-nix run github:worldofgeese/pr-reviewer/v0.2.1 -- --version
+nix run github:worldofgeese/pr-reviewer -- --version
 ```
 
 To use it from another flake, add `inputs.pr-reviewer.url = "github:worldofgeese/pr-reviewer"` and use `inputs.pr-reviewer.packages.${system}.default`.
