@@ -288,6 +288,10 @@ pr-reviewer status
 
 Stop that daemon, or give the second daemon its own directory with `PR_REVIEWER_CONFIG_DIR`. Do not delete `daemon.pid` or `daemon.lock`: the lock belongs to the running process, and the operating system releases it when that process exits, so a crash leaves nothing to clean up. A leftover `daemon.pid` does not block a start.
 
+### Daemon won't start: "failed to lock ... daemon.lock"
+
+The file system of the config directory does not support file locks. Network and some FUSE file systems can fail this way. The daemon refuses to run without the lock. Move the config directory to a local disk with `PR_REVIEWER_CONFIG_DIR`.
+
 ### "database is locked"
 
 Only one pr-reviewer process should access the state database at a time. If you see this:

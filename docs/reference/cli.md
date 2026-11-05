@@ -147,7 +147,7 @@ Only one daemon can run per config directory:
 pr-reviewer stop
 ```
 
-Sends `SIGTERM` to the process ID in `daemon.pid` and removes the file. Do not use it for a daemon that a service manager restarts.
+Sends `SIGTERM` to the process ID in `daemon.pid`, removes the file and waits up to 10 seconds for the process to exit, so that a `start` right after `stop` is not refused by the lock. Do not use it for a daemon that a service manager restarts.
 
 ## `status`
 

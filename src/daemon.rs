@@ -27,6 +27,8 @@ const RATE_LIMIT_TOTAL: u32 = 5000;
 const WORK_KIND_REVIEW_PR: &str = "review_pr";
 const WORK_KIND_RESPOND_TO_COMMAND: &str = "respond_to_command";
 const WORK_KIND_REPAIR_PR: &str = "repair_pr";
+/// How long `stop` waits for the daemon process to exit.
+const STOP_WAIT: Duration = Duration::from_secs(10);
 /// How often to read the review threads of a reviewed PR for human answers.
 const HUMAN_ANSWER_CHECK_INTERVAL: Duration = Duration::from_secs(120);
 
@@ -552,6 +554,15 @@ pub fn stop() -> Result<()> {
     kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
         .with_context(|| format!("failed to signal daemon pid {pid}"))?;
     remove_pid(&pid_file)?;
+    // The daemon holds its lock until the process is gone. Wait for that, so that
+    // `stop && start` is not refused by the exiting daemon.
+    let deadline = Instant::now() + STOP_WAIT;
+    while is_pid_alive(pid as i32) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if is_pid_alive(pid as i32) {
+        println!("daemon pid {pid} is still exiting; a start now may be refused");
+    }
     println!("stopped daemon pid {pid}");
     Ok(())
 }

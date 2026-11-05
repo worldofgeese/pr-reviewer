@@ -119,6 +119,7 @@ Cached `authenticated_user` at engine init. Falls back to live API call if cache
 - Config: `~/.config/pr-reviewer/config.toml`
 - Database: `~/.config/pr-reviewer/state.db` (SQLite, WAL mode)
 - PID file: `~/.config/pr-reviewer/daemon.pid`
+- Daemon lock: `~/.config/pr-reviewer/daemon.lock` (OS file lock; the running daemon holds it and writes its pid into it)
 - Keyfile: `~/.config/pr-reviewer/keyfile` (32-byte AES key, permissions `0600`)
 - Managed repos: `~/.config/pr-reviewer/repos/{owner}/{name}/`
 - Tables: `pr_state`, `review_log`, `daemon_status`, `repo_etags`, `schema_version`
