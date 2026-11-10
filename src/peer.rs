@@ -92,13 +92,37 @@ pub fn peer_answered_command<'a>(
     peers: &[String],
     source_comment_id: u64,
 ) -> Option<&'a str> {
+    peer_command_response(issue_comments, peers, source_comment_id, |_| true)
+}
+
+/// The peer that repairs the `@pr-reviewer fix` in comment
+/// `source_comment_id`. A peer with auto-fix off answers the command too, but
+/// its answer says `repair=off` and leaves the repair to this daemon.
+pub fn peer_took_repair<'a>(
+    issue_comments: &'a [IssueComment],
+    peers: &[String],
+    source_comment_id: u64,
+) -> Option<&'a str> {
+    peer_command_response(issue_comments, peers, source_comment_id, |marker| {
+        marker.contains(" repair=on ")
+    })
+}
+
+fn peer_command_response<'a>(
+    issue_comments: &'a [IssueComment],
+    peers: &[String],
+    source_comment_id: u64,
+    accept: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
     let needle = format!(" source_comment={source_comment_id} ");
     issue_comments
         .iter()
         .filter(|comment| is_peer(&comment.user.login, peers))
         .find(|comment| {
             comment.body.lines().any(|line| {
-                line.starts_with("<!-- pr-reviewer-command-response ") && line.contains(&needle)
+                line.starts_with("<!-- pr-reviewer-command-response ")
+                    && line.contains(&needle)
+                    && accept(line)
             })
         })
         .map(|comment| comment.user.login.as_str())
@@ -300,6 +324,21 @@ mod tests {
         ];
         assert_eq!(peer_answered_command(&comments, &peers(), 42), Some("tao"));
         assert_eq!(peer_answered_command(&comments, &peers(), 4), None);
+    }
+
+    #[test]
+    fn a_peer_with_auto_fix_off_answers_fix_but_leaves_the_repair() {
+        let answer = |repair: &str| {
+            format!(
+                "<!-- pr-reviewer-command-response command=fix pr=7 source_comment=42 sha={SHA} repair={repair} -->\n\nOK."
+            )
+        };
+        let off = [comment(1, "tao", &answer("off"), "t")];
+        assert_eq!(peer_answered_command(&off, &peers(), 42), Some("tao"));
+        assert_eq!(peer_took_repair(&off, &peers(), 42), None);
+
+        let on = [comment(1, "tao", &answer("on"), "t")];
+        assert_eq!(peer_took_repair(&on, &peers(), 42), Some("tao"));
     }
 
     fn review_comment(id: u64, login: &str, parent: Option<u64>) -> ReviewComment {

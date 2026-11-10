@@ -97,8 +97,8 @@ A marker is an HTML comment in a bot comment. The reader does not see it on GitH
 | Marker | Written by | Read by the daemon for |
 |--------|-----------|------------------------|
 | `<!-- pr-reviewer-action:fix-required pr=<number> sha=<head> finding=review-feedback -->` | The bot, in its review comment, when the review requests changes with blocking findings | Queuing an automatic repair. The marker must come from the bot account and name the current head commit |
-| `- Reviewer: [pr-reviewer](` in the **Review metadata** section | The bot, in every review | Counting the review cycle. The count is the number of reviewed commits plus one |
-| `<!-- pr-reviewer-command-response ... -->` | The bot, in every answer to a command | Nothing. It identifies the answer |
+| `- Reviewer: [pr-reviewer](` in the **Review metadata** section | The bot, in every review | Counting the review cycle. The count is the number of reviewed commits plus one. In a review from a [peer daemon](../how-to/share-repositories-with-a-peer.md), it means that the peer reviewed that commit |
+| `<!-- pr-reviewer-command-response command=<command> pr=<number> source_comment=<id> sha=<head> -->`. An answer to `fix` also has `repair=on` or `repair=off` | The bot, in every answer to a command | Skipping a command that a peer daemon already answered. For `fix`, only `repair=on` means that the peer runs the repair |
 
 ## Labels
 

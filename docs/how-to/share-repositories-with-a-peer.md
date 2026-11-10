@@ -55,7 +55,7 @@ Before a daemon reviews a head commit, it reads the reviews and comments of the 
 
 When a peer's status comment says that the peer is reviewing that head commit, the daemon checks again after 2 minutes. A status comment older than `harness.timeout_secs` does not count, because the peer stopped before it finished.
 
-For commands such as `@pr-reviewer status` and `@pr-reviewer fix`, the daemon skips a command that a peer already answered. It does not reply in a review thread that a peer started, because the peer answers there.
+For commands such as `@pr-reviewer status` and `@pr-reviewer fix`, the daemon skips a command that a peer already answered. For `@pr-reviewer fix`, it still runs the repair when the peer that answered has auto-fix off. It does not reply in a review thread that a peer started, because the peer answers there.
 
 On the **Conversation** tab, a comment from a peer's login counts as the peer's work only when it carries a pr-reviewer marker. So a person who uses the peer's account by hand can still give the bot commands there. In review threads, the daemon ignores every comment from a peer's login, as it ignores its own.
 
@@ -63,6 +63,8 @@ On the **Conversation** tab, a comment from a peer's login counts as the peer's 
 
 - A review that a peer posted earlier does not count toward this daemon's [review cycles](../explanation/how-a-review-works.md#review-cycles). If the standby reviews a pull request that the primary reviewed before, the standby starts at review cycle 1 and can raise findings again that the primary's open threads already hold.
 - Each daemon dismisses only its own change requests. A change request from the standby stays until the standby dismisses it, or until a person does.
+- A mention in a review thread that a peer started waits for that peer. When the peer is off, it answers after it starts again.
+- A daemon uses its own `harness.timeout_secs` to decide that a peer's status comment is stale. Give both daemons the same value.
 - When both daemons are on and a review on the primary takes longer than the delay, before the primary posts its status comment, both can review the same head commit. Raise the delay if you see this.
 
 ## Next steps
