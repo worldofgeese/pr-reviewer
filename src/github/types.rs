@@ -116,9 +116,17 @@ pub struct IssueComment {
     #[serde(default)]
     pub author_association: Option<String>,
     pub created_at: String,
+    /// Changes when the comment is edited, such as a durable status comment
+    /// that the daemon updates in place.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 impl IssueComment {
+    pub fn last_changed_at(&self) -> &str {
+        self.updated_at.as_deref().unwrap_or(&self.created_at)
+    }
+
     /// True when the daemon posted this comment: it carries a
     /// `<!-- pr-reviewer-... -->` marker AND its author is the bot or the
     /// authenticated account. The marker alone is forgeable, and the login

@@ -265,6 +265,7 @@ If duplicates are appearing:
 
 1. Confirm you only have one instance of pr-reviewer running: `pr-reviewer status`
 2. Confirm the `bot_name` in config matches what was used when the prior review was posted
+3. If another person runs a daemon on the same repositories under their own account, name each other in `defaults.peer_logins` and give one daemon a `defaults.standby_delay_secs`. See [Share repositories with a peer daemon](../how-to/share-repositories-with-a-peer.md).
 
 ### Review stuck in "in-progress" state after a crash
 

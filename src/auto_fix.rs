@@ -889,6 +889,7 @@ mod tests {
             user: test_user(login),
             author_association: None,
             created_at: format!("2026-04-29T00:{id:02}:00Z"),
+            updated_at: None,
         }
     }
 

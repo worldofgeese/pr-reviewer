@@ -200,6 +200,16 @@ pub struct DefaultsConfig {
     /// "Commit statuses: write" (fine-grained token).
     #[serde(default)]
     pub status_on_no_new_findings: bool,
+    /// GitHub logins of other pr-reviewer daemons that watch the same
+    /// repositories under their own account. Their reviews, status comments
+    /// and command answers count as done, so a PR is not reviewed twice.
+    #[serde(default)]
+    pub peer_logins: Vec<String>,
+    /// Seconds to wait before this daemon reviews a new head commit or
+    /// answers a maintainer command. A standby daemon sets this so that a
+    /// peer with no delay goes first. 0 = no wait.
+    #[serde(default)]
+    pub standby_delay_secs: u64,
 }
 
 /// Per-repo overrides for the review policy. Unset fields use `[defaults]`.
@@ -570,6 +580,8 @@ impl Default for DefaultsConfig {
             stack_aware: true,
             dismiss_stale_change_requests: true,
             status_on_no_new_findings: false,
+            peer_logins: Vec::new(),
+            standby_delay_secs: 0,
         }
     }
 }

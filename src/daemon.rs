@@ -18,8 +18,9 @@ use tokio::task::JoinSet;
 
 use crate::config::{AppConfig, RepoConfig};
 use crate::github::client::{GitHubClient, ListPullsResult};
-use crate::github::pr;
 use crate::github::types::{IssueComment, PullRequest};
+use crate::github::{comments, pr};
+use crate::peer::PeerActivity;
 use crate::review::engine::{ReviewEngine, ReviewOptions};
 use crate::store::db::{Database, RequeuedClaims, WorkItem, WorkItemInsert};
 
@@ -70,6 +71,8 @@ pub async fn start(
     let semaphore = Arc::new(Semaphore::new(worker_limit));
     let mut workers: JoinSet<()> = JoinSet::new();
     let bot_mention = format!("@{}", config.defaults.bot_name);
+    let peers = config.defaults.peer_logins.clone();
+    let standby_delay = config.defaults.standby_delay_secs;
 
     let base_interval = config.daemon.poll_interval_secs.max(1);
     let max_interval = config.daemon.max_poll_interval_secs.max(base_interval);
@@ -216,7 +219,8 @@ pub async fn start(
                         let already = state.as_ref().and_then(|s| s.last_reviewed_sha.clone());
                         if already.as_deref() != Some(pr.head.sha.as_str()) {
                             changes_detected |=
-                                enqueue_review_work_item(&db, &repo_name, &pr).await?;
+                                enqueue_review_work_item(&db, &repo_name, &pr, standby_delay)
+                                    .await?;
                         }
 
                         let last_comment_check =
@@ -243,6 +247,11 @@ pub async fn start(
                                     .authenticated_user()
                                     .is_some_and(|u| comment.user.login.eq_ignore_ascii_case(u))
                                 {
+                                    continue;
+                                }
+                                // A peer daemon answers in its own threads, and its
+                                // replies are not questions for this daemon.
+                                if crate::peer::is_peer(&comment.user.login, &peers) {
                                     continue;
                                 }
                                 // Skip comments from any GitHub Bot account (other
@@ -331,7 +340,7 @@ pub async fn start(
                                 )
                             {
                                 changes_detected |=
-                                    enqueue_repair_work_item(&db, &repo_name, &pr, None).await?;
+                                    enqueue_repair_work_item(&db, &repo_name, &pr, None, 0).await?;
                             }
 
                             for comment in issue_comments {
@@ -339,6 +348,7 @@ pub async fn start(
                                     &comment,
                                     config.defaults.bot_name.as_str(),
                                     engine.authenticated_user(),
+                                    &peers,
                                 ) {
                                     continue;
                                 }
@@ -367,7 +377,13 @@ pub async fn start(
                                 }
 
                                 let outcome = apply_maintainer_command(
-                                    &db, &repo_cfg, &repo_name, &pr, &comment, command,
+                                    &db,
+                                    &repo_cfg,
+                                    &repo_name,
+                                    &pr,
+                                    &comment,
+                                    command,
+                                    standby_delay,
                                 )
                                 .await?;
                                 changes_detected |= outcome.changed;
@@ -378,6 +394,7 @@ pub async fn start(
                                     &comment,
                                     command,
                                     outcome.orchestration_note,
+                                    standby_delay,
                                 )
                                 .await?;
                             }
@@ -859,6 +876,7 @@ async fn enqueue_review_work_item(
     db: &Database,
     repo_name: &str,
     pr: &PullRequest,
+    delay_secs: u64,
 ) -> Result<bool> {
     db.enqueue_work_item(WorkItemInsert {
         repo: repo_name.to_string(),
@@ -868,6 +886,7 @@ async fn enqueue_review_work_item(
         dedupe_key: format!("review:{repo_name}:{}:{}", pr.number, pr.head.sha),
         payload: "{}".to_string(),
         source_comment_id: None,
+        delay_secs,
     })
     .await
 }
@@ -877,6 +896,7 @@ async fn enqueue_repair_work_item(
     repo_name: &str,
     pr: &PullRequest,
     payload: Option<String>,
+    delay_secs: u64,
 ) -> Result<bool> {
     db.enqueue_work_item(WorkItemInsert {
         repo: repo_name.to_string(),
@@ -886,6 +906,7 @@ async fn enqueue_repair_work_item(
         dedupe_key: format!("repair:{repo_name}:{}:{}", pr.number, pr.head.sha),
         payload: payload.unwrap_or_else(|| "{}".to_string()),
         source_comment_id: None,
+        delay_secs,
     })
     .await
 }
@@ -916,6 +937,7 @@ async fn enqueue_command_work_item(
     comment: &IssueComment,
     command: MaintainerCommand,
     orchestration_note: Option<String>,
+    delay_secs: u64,
 ) -> Result<bool> {
     let payload = serde_json::to_string(&CommandWorkPayload {
         command: command.as_str().to_string(),
@@ -935,6 +957,7 @@ async fn enqueue_command_work_item(
         dedupe_key: format!("command:{repo_name}:{}:{}", pr.number, comment.id),
         payload,
         source_comment_id: Some(comment.id as i64),
+        delay_secs,
     })
     .await
 }
@@ -952,6 +975,7 @@ async fn apply_maintainer_command(
     pr: &PullRequest,
     comment: &IssueComment,
     command: MaintainerCommand,
+    delay_secs: u64,
 ) -> Result<CommandActionOutcome> {
     match command {
         MaintainerCommand::Status | MaintainerCommand::Explain => {
@@ -974,7 +998,8 @@ async fn apply_maintainer_command(
                 source_author: Some(comment.user.login.clone()),
                 source_body: Some(comment.body.clone()),
             })?;
-            let queued = enqueue_repair_work_item(db, repo_name, pr, Some(payload)).await?;
+            let queued =
+                enqueue_repair_work_item(db, repo_name, pr, Some(payload), delay_secs).await?;
             let note = if queued {
                 format!(
                     "Queued repair_pr for {repo_name}#{} at {} from maintainer command comment {}.",
@@ -1056,6 +1081,8 @@ async fn apply_maintainer_command(
 #[derive(Debug, Clone, Copy, Default)]
 struct WorkItemOutcome {
     auto_fix_changed: bool,
+    /// The item went back to the queue because a peer daemon holds the work.
+    deferred: bool,
 }
 
 async fn spawn_pending_work_items(
@@ -1093,6 +1120,9 @@ async fn spawn_pending_work_items(
                 Ok(outcome) => {
                     if outcome.auto_fix_changed {
                         auto_fix_detected.store(true, Ordering::Release);
+                    }
+                    if outcome.deferred {
+                        return;
                     }
                     if let Err(err) = db.complete_work_item(item_id).await {
                         tracing::warn!(
@@ -1153,6 +1183,34 @@ async fn process_work_item(
                 );
                 return Ok(WorkItemOutcome::default());
             }
+            match peer_review_activity(config, github, &repo_cfg, &pr_data).await {
+                PeerActivity::None => {}
+                PeerActivity::Done { login } => {
+                    tracing::info!(
+                        repo = %item.repo,
+                        pr = item.pr_number,
+                        sha = %item.head_sha,
+                        peer = %login,
+                        "skipping review: a peer daemon already handled this head"
+                    );
+                    return Ok(WorkItemOutcome::default());
+                }
+                PeerActivity::InProgress { login } => {
+                    tracing::info!(
+                        repo = %item.repo,
+                        pr = item.pr_number,
+                        sha = %item.head_sha,
+                        peer = %login,
+                        "deferring review: a peer daemon is reviewing this head"
+                    );
+                    db.defer_work_item(item.id, PEER_IN_PROGRESS_RECHECK_SECS)
+                        .await?;
+                    return Ok(WorkItemOutcome {
+                        deferred: true,
+                        ..WorkItemOutcome::default()
+                    });
+                }
+            }
             engine
                 .review_existing_pr(&repo_cfg, &pr_data, ReviewOptions::default())
                 .await?;
@@ -1161,6 +1219,24 @@ async fn process_work_item(
         WORK_KIND_RESPOND_TO_COMMAND => {
             let payload: CommandWorkPayload = serde_json::from_str(&item.payload)
                 .with_context(|| format!("invalid command work payload for item {}", item.id))?;
+            if let Some(peer) = peer_that_answered(
+                config,
+                github,
+                &repo_cfg,
+                item.pr_number as u64,
+                payload.source_comment_id,
+            )
+            .await
+            {
+                tracing::info!(
+                    repo = %item.repo,
+                    pr = item.pr_number,
+                    comment_id = payload.source_comment_id,
+                    peer = %peer,
+                    "skipping command: a peer daemon already answered it"
+                );
+                return Ok(WorkItemOutcome::default());
+            }
             let pr_data = pr::get_pull_request(
                 github,
                 &repo_cfg.owner,
@@ -1188,6 +1264,29 @@ async fn process_work_item(
         }
         WORK_KIND_REPAIR_PR => {
             let repair_payload = serde_json::from_str::<RepairWorkPayload>(&item.payload).ok();
+            if let Some(source_comment_id) = repair_payload
+                .as_ref()
+                .and_then(|payload| payload.source_comment_id)
+            {
+                if let Some(peer) = peer_that_answered(
+                    config,
+                    github,
+                    &repo_cfg,
+                    item.pr_number as u64,
+                    source_comment_id,
+                )
+                .await
+                {
+                    tracing::info!(
+                        repo = %item.repo,
+                        pr = item.pr_number,
+                        comment_id = source_comment_id,
+                        peer = %peer,
+                        "skipping repair: a peer daemon already answered the fix command"
+                    );
+                    return Ok(WorkItemOutcome::default());
+                }
+            }
             let pr_data = pr::get_pull_request(
                 github,
                 &repo_cfg.owner,
@@ -1223,9 +1322,91 @@ async fn process_work_item(
             .await?;
             Ok(WorkItemOutcome {
                 auto_fix_changed: outcome.is_some(),
+                deferred: false,
             })
         }
         _ => Err(anyhow!("unknown work item kind {}", item.task_kind)),
+    }
+}
+
+/// How long to wait before checking again on a head that a peer daemon is
+/// reviewing.
+const PEER_IN_PROGRESS_RECHECK_SECS: u64 = 120;
+
+/// What a peer daemon already did for the head of `pr_data`. A GitHub error
+/// counts as "nothing": a failed work item is not queued again, and a
+/// second review is better than none.
+async fn peer_review_activity(
+    config: &AppConfig,
+    github: &GitHubClient,
+    repo_cfg: &RepoConfig,
+    pr_data: &PullRequest,
+) -> PeerActivity {
+    let peers = &config.defaults.peer_logins;
+    if peers.is_empty() {
+        return PeerActivity::None;
+    }
+    let lookup = async {
+        let reviews =
+            comments::get_existing_reviews(github, &repo_cfg.owner, &repo_cfg.name, pr_data.number)
+                .await?;
+        let issue_comments = github
+            .get_issue_comments(&repo_cfg.owner, &repo_cfg.name, pr_data.number)
+            .await?;
+        anyhow::Ok((reviews, issue_comments))
+    };
+    match lookup.await {
+        Ok((reviews, issue_comments)) => crate::peer::peer_activity(
+            &reviews,
+            &issue_comments,
+            peers,
+            pr_data.number,
+            &pr_data.head.sha,
+            config.harness.timeout_secs,
+            chrono::Utc::now(),
+        ),
+        Err(err) => {
+            tracing::warn!(
+                repo = %repo_cfg.full_name(),
+                pr = pr_data.number,
+                error = %err,
+                "cannot check peer daemons; reviewing anyway"
+            );
+            PeerActivity::None
+        }
+    }
+}
+
+/// The peer daemon that already answered command comment
+/// `source_comment_id`. A GitHub error counts as "none", as above.
+async fn peer_that_answered(
+    config: &AppConfig,
+    github: &GitHubClient,
+    repo_cfg: &RepoConfig,
+    pr_number: u64,
+    source_comment_id: u64,
+) -> Option<String> {
+    let peers = &config.defaults.peer_logins;
+    if peers.is_empty() {
+        return None;
+    }
+    match github
+        .get_issue_comments(&repo_cfg.owner, &repo_cfg.name, pr_number)
+        .await
+    {
+        Ok(issue_comments) => {
+            crate::peer::peer_answered_command(&issue_comments, peers, source_comment_id)
+                .map(str::to_string)
+        }
+        Err(err) => {
+            tracing::warn!(
+                repo = %repo_cfg.full_name(),
+                pr = pr_number,
+                error = %err,
+                "cannot check peer daemons; answering anyway"
+            );
+            None
+        }
     }
 }
 
@@ -1242,12 +1423,19 @@ fn should_skip_command_comment(
     comment: &IssueComment,
     bot_name: &str,
     authenticated_user: Option<&str>,
+    peers: &[String],
 ) -> bool {
     if comment.is_own_comment(bot_name, authenticated_user) {
         tracing::debug!(
             comment_id = comment.id,
             "skipping pr-reviewer's own comment"
         );
+        return true;
+    }
+    if crate::peer::is_peer(&comment.user.login, peers)
+        && comment.body.contains("<!-- pr-reviewer-")
+    {
+        tracing::debug!(comment_id = comment.id, "skipping a peer daemon's comment");
         return true;
     }
     comment.user.is_bot()
@@ -1381,6 +1569,7 @@ mod tests {
             user: test_user("maintainer"),
             author_association: association.map(ToString::to_string),
             created_at: "2026-04-29T00:00:00Z".to_string(),
+            updated_at: None,
         }
     }
 
@@ -1391,6 +1580,7 @@ mod tests {
             user: test_user(login),
             author_association: Some("MEMBER".to_string()),
             created_at: "2026-04-29T00:00:00Z".to_string(),
+            updated_at: None,
         }
     }
 
@@ -1428,7 +1618,7 @@ mod tests {
         );
 
         let skipped = tracing::subscriber::with_default(subscriber, || {
-            should_skip_command_comment(&comment, "pr-reviewer", Some("tao"))
+            should_skip_command_comment(&comment, "pr-reviewer", Some("tao"), &[])
         });
 
         assert!(skipped);
@@ -1444,13 +1634,44 @@ mod tests {
         assert!(!should_skip_command_comment(
             &comment,
             "pr-reviewer",
-            Some("tao")
+            Some("tao"),
+            &[]
         ));
         assert_eq!(
             parse_pr_reviewer_command(&comment.body, "pr-reviewer"),
             Some(MaintainerCommand::Fix)
         );
         assert!(is_maintainer_comment(&comment));
+    }
+
+    #[test]
+    fn a_peer_daemon_marker_comment_is_not_a_command() {
+        let comment = comment_by(
+            1,
+            "Tao",
+            "<!-- pr-reviewer-command-response command=status pr=1 source_comment=2 sha=abc -->\n@pr-reviewer fix",
+        );
+        let peers = ["tao".to_string()];
+
+        assert!(should_skip_command_comment(
+            &comment,
+            "pr-reviewer",
+            Some("me"),
+            &peers
+        ));
+    }
+
+    #[test]
+    fn an_unmarked_command_from_a_peer_account_is_still_a_command() {
+        let comment = comment_by(1, "tao", "@pr-reviewer status");
+        let peers = ["tao".to_string()];
+
+        assert!(!should_skip_command_comment(
+            &comment,
+            "pr-reviewer",
+            Some("me"),
+            &peers
+        ));
     }
 
     #[test]
@@ -1464,7 +1685,8 @@ mod tests {
         assert!(!should_skip_command_comment(
             &comment,
             "pr-reviewer",
-            Some("tao")
+            Some("tao"),
+            &[]
         ));
     }
 
@@ -1479,7 +1701,8 @@ mod tests {
         assert!(should_skip_command_comment(
             &comment,
             "pr-reviewer",
-            Some("tao")
+            Some("tao"),
+            &[]
         ));
     }
 
@@ -1629,6 +1852,7 @@ mod tests {
             dedupe_key: "review:o/r:1:abc".to_string(),
             payload: "{}".to_string(),
             source_comment_id: None,
+            delay_secs: 0,
         };
         assert!(db.enqueue_work_item(item).await.expect("enqueue"));
         let id = db.claim_pending_work_items(1).await.expect("claim")[0].id;
