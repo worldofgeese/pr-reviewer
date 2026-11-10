@@ -11,6 +11,7 @@ src/
 ├── config.rs            # TOML config (serde) at ~/.config/pr-reviewer/config.toml, CLI config commands
 ├── repo_manager.rs      # Managed clone lifecycle: clone, fetch, purge, cleanup under ~/.config/pr-reviewer/repos/
 ├── safety.rs            # Fork policy evaluation
+├── peer.rs              # Peer daemons: what another daemon (peer_logins) already did for a head, a command or a thread
 ├── token/
 │   ├── mod.rs           # Token resolution chain: signet → encrypted → plain text → env var
 │   ├── crypto.rs        # Double-layer AES-256-GCM encryption (keyfile + passphrase/machine-derived)
@@ -90,6 +91,7 @@ Simple `Confidence { level: ConfidenceLevel, justification: String }` where leve
 
 - DB claim lock prevents concurrent duplicate reviews (unique constraint on dedupe_key)
 - GitHub-side check prevents re-posting if DB is wiped (queries existing reviews for bot + SHA match)
+- Peer daemons (`defaults.peer_logins`) under other accounts: before a review, command or repair, `daemon::process_work_item` asks `peer::peer_activity` / `peer::peer_answered_command`; a peer's work counts only with a pr-reviewer marker from the peer's login. A peer "in progress" defers the item (`defer_work_item`, `work_queue.not_before`). `standby_delay_secs` sets `not_before` at enqueue so a primary peer goes first
 - One daemon per config directory: an exclusive `flock` on `daemon.lock`, held for the process lifetime. Only after it holds the lock does start-up requeue every `claimed` work item and drop unfinished review claims (`requeue_orphaned_claims`)
 
 ### Self-Review Detection (engine.rs)

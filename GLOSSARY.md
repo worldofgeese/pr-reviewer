@@ -27,6 +27,11 @@ _Avoid_: managed repo, configured repo
 The local checkout that pr-reviewer keeps of a watched repository.
 _Avoid_: managed repo, local repo
 
+**Peer daemon**:
+Another pr-reviewer daemon that watches the same repositories under another
+GitHub account, named in `peer_logins`.
+_Avoid_: other instance, second bot
+
 ### Reviews
 
 **Review cycle**:

@@ -157,6 +157,8 @@ max_prompt_bytes = 204800
 | `stack_aware` | `true` | Detect stacked PRs, tell the reviewer about the parent PR, and drop findings that a lower PR already tracks. |
 | `dismiss_stale_change_requests` | `true` | Dismiss the bot's earlier `REQUEST_CHANGES` reviews when no blocking finding is open. |
 | `status_on_no_new_findings` | `false` | When a re-review finds nothing new (`skipped:no-novel-findings`), post a `success` commit status on the head commit: context `pr-reviewer`, description `Reviewed: no new findings`. A merge gate can then tell "reviewed, nothing new" from "not reviewed yet". It does not mean that no blocking finding is open; gates should also read the PR's review state. Needs the `repo:status` scope (classic token) or "Commit statuses: write" (fine-grained token). If GitHub refuses the status, the bot logs a warning and the review is unaffected. With `dry_run`, the bot logs the status instead. |
+| `peer_logins` | `[]` | GitHub logins of [peer daemons](../how-to/share-repositories-with-a-peer.md): other pr-reviewer daemons that watch the same repositories under their own account. The daemon skips a head commit that a peer reviewed or skipped, waits while a peer reviews it, skips a command that a peer answered and does not reply in a review thread that a peer started. A peer's comment counts only when it carries a pr-reviewer marker. |
+| `standby_delay_secs` | `0` | Seconds to wait before the daemon reviews a new head commit or answers a command. Set it on a standby daemon so that a peer with no delay goes first. `0` = no wait. |
 
 ### Tuning context limits
 

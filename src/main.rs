@@ -4,6 +4,7 @@ mod context;
 mod daemon;
 mod github;
 mod harness;
+mod peer;
 mod repo_manager;
 mod review;
 mod safety;

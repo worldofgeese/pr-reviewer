@@ -163,6 +163,8 @@ pub struct WorkItemInsert {
     pub dedupe_key: String,
     pub payload: String,
     pub source_comment_id: Option<i64>,
+    /// Seconds from now before the item may be claimed. 0 = at once.
+    pub delay_secs: u64,
 }
 
 #[allow(dead_code)] // mirrors the external schema; not every field is read
@@ -471,6 +473,9 @@ impl Database {
             ensure_column_exists(conn, "work_queue", "error_message", "TEXT")?;
             ensure_column_exists(conn, "work_queue", "claimed_at", "TEXT")?;
             ensure_column_exists(conn, "work_queue", "completed_at", "TEXT")?;
+            // A pending item is not claimed before this time (UTC, SQLite
+            // datetime format). NULL means at once.
+            ensure_column_exists(conn, "work_queue", "not_before", "TEXT")?;
 
             // Reply deduplication: prevents replying to the same comment twice
             conn.execute_batch(
@@ -1271,9 +1276,13 @@ impl Database {
             let changed = conn.execute(
                 r#"
                 INSERT INTO work_queue (
-                    repo, pr_number, head_sha, task_kind, dedupe_key, payload, source_comment_id
+                    repo, pr_number, head_sha, task_kind, dedupe_key, payload, source_comment_id,
+                    not_before
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7,
+                    CASE WHEN ?8 > 0 THEN datetime('now', '+' || ?8 || ' seconds') END
+                )
                 ON CONFLICT(dedupe_key) DO NOTHING
                 "#,
                 params![
@@ -1284,6 +1293,7 @@ impl Database {
                     item.dedupe_key,
                     item.payload,
                     item.source_comment_id,
+                    item.delay_secs as i64,
                 ],
             )?;
             Ok(changed > 0)
@@ -1301,6 +1311,7 @@ impl Database {
                     SELECT id
                       FROM work_queue
                      WHERE status = 'pending'
+                       AND (not_before IS NULL OR not_before <= datetime('now'))
                      ORDER BY created_at ASC, id ASC
                      LIMIT ?1
                     "#,
@@ -1357,6 +1368,26 @@ impl Database {
             }
             tx.commit()?;
             Ok(claimed)
+        })
+        .await
+    }
+
+    /// Put a claimed item back in the queue, to be claimed again no sooner
+    /// than `delay_secs` from now. Used while a peer daemon holds the work.
+    pub async fn defer_work_item(&self, id: i64, delay_secs: u64) -> Result<()> {
+        self.run(move |conn| {
+            conn.execute(
+                r#"
+                UPDATE work_queue
+                   SET status = 'pending',
+                       claimed_at = NULL,
+                       not_before = datetime('now', '+' || ?2 || ' seconds')
+                 WHERE id = ?1
+                   AND status = 'claimed'
+                "#,
+                params![id, delay_secs.max(1) as i64],
+            )?;
+            Ok(())
         })
         .await
     }
@@ -2717,6 +2748,7 @@ mod tests {
             dedupe_key: key.to_string(),
             payload: "{}".to_string(),
             source_comment_id: None,
+            delay_secs: 0,
         };
         assert!(db.enqueue_work_item(item).await.expect("enqueue"));
         db.list_work_queue(None, None, 100)
@@ -3046,6 +3078,7 @@ mod tests {
             dedupe_key: "review:o/r:1:abc".to_string(),
             payload: "{}".to_string(),
             source_comment_id: None,
+            delay_secs: 0,
         };
 
         assert!(db
@@ -3088,6 +3121,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_delayed_work_item_is_not_claimed_until_its_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::new(dir.path().join("state.db"))
+            .await
+            .expect("db");
+        let item = WorkItemInsert {
+            repo: "o/r".to_string(),
+            pr_number: 1,
+            head_sha: "abc".to_string(),
+            task_kind: "review_pr".to_string(),
+            dedupe_key: "review:o/r:1:abc".to_string(),
+            payload: "{}".to_string(),
+            source_comment_id: None,
+            delay_secs: 600,
+        };
+        assert!(db.enqueue_work_item(item).await.expect("enqueue"));
+        assert!(db
+            .claim_pending_work_items(10)
+            .await
+            .expect("claim before the delay")
+            .is_empty());
+
+        let conn = open_conn(db.path()).expect("open db");
+        conn.execute(
+            "UPDATE work_queue SET not_before = datetime('now', '-1 seconds')",
+            [],
+        )
+        .expect("move the time");
+        assert_eq!(
+            db.claim_pending_work_items(10)
+                .await
+                .expect("claim after the delay")
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deferred_work_item_goes_back_to_pending_with_a_delay() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Database::new(dir.path().join("state.db"))
+            .await
+            .expect("db");
+        let item = WorkItemInsert {
+            repo: "o/r".to_string(),
+            pr_number: 1,
+            head_sha: "abc".to_string(),
+            task_kind: "review_pr".to_string(),
+            dedupe_key: "review:o/r:1:abc".to_string(),
+            payload: "{}".to_string(),
+            source_comment_id: None,
+            delay_secs: 0,
+        };
+        assert!(db.enqueue_work_item(item).await.expect("enqueue"));
+        let claimed = db.claim_pending_work_items(1).await.expect("claim");
+        assert_eq!(claimed.len(), 1);
+
+        db.defer_work_item(claimed[0].id, 120).await.expect("defer");
+        let counts = db.get_work_queue_counts().await.expect("counts");
+        assert_eq!(counts.pending, 1);
+        assert_eq!(counts.claimed, 0);
+        assert!(db
+            .claim_pending_work_items(1)
+            .await
+            .expect("claim while deferred")
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn work_queue_supports_fail_retry_cancel_and_startup_requeue() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Database::new(dir.path().join("state.db"))
@@ -3102,6 +3204,7 @@ mod tests {
             dedupe_key: "repair:o/r:1:abc".to_string(),
             payload: "{}".to_string(),
             source_comment_id: Some(99),
+            delay_secs: 0,
         };
         assert!(db.enqueue_work_item(item).await.expect("enqueue"));
         let claimed = db.claim_pending_work_items(1).await.expect("claim");
@@ -3169,6 +3272,7 @@ mod tests {
                     dedupe_key: dedupe.to_string(),
                     payload: "{}".to_string(),
                     source_comment_id: None,
+                    delay_secs: 0,
                 })
                 .await
                 .expect("enqueue"));

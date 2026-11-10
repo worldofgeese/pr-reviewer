@@ -2201,6 +2201,20 @@ impl ReviewEngine {
         )
         .await
         .unwrap_or_default();
+        if let Some(peer) = crate::peer::peer_thread_owner(
+            &all_comments,
+            &self.config.defaults.peer_logins,
+            comment.id,
+        ) {
+            tracing::info!(
+                repo = %repo_cfg.full_name(),
+                pr = pr_data.number,
+                comment_id = comment.id,
+                peer = %peer,
+                "not replying: a peer daemon started this thread and answers in it"
+            );
+            return Ok(());
+        }
         let thread_history = build_thread_history(&all_comments, comment.id);
         let issue_comments = comments::get_issue_comments(
             &self.github,
@@ -4699,6 +4713,7 @@ mod tests {
             user: test_user(login),
             author_association: None,
             created_at: format!("2026-03-30T00:{:02}:00Z", id),
+            updated_at: None,
         }
     }
 
@@ -4784,6 +4799,7 @@ Ship the archive feature safely.",
                 user: test_user("tao"),
                 author_association: None,
                 created_at: "2026-11-05T00:00:00Z".to_string(),
+                updated_at: None,
             };
             assert!(comment.is_own_comment("pr-reviewer", Some("tao")));
         }
