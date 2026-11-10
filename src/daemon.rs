@@ -1225,6 +1225,7 @@ async fn process_work_item(
                 &repo_cfg,
                 item.pr_number as u64,
                 payload.source_comment_id,
+                crate::peer::peer_answered_command,
             )
             .await
             {
@@ -1274,6 +1275,7 @@ async fn process_work_item(
                     &repo_cfg,
                     item.pr_number as u64,
                     source_comment_id,
+                    crate::peer::peer_took_repair,
                 )
                 .await
                 {
@@ -1282,7 +1284,7 @@ async fn process_work_item(
                         pr = item.pr_number,
                         comment_id = source_comment_id,
                         peer = %peer,
-                        "skipping repair: a peer daemon already answered the fix command"
+                        "skipping repair: a peer daemon took the fix command"
                     );
                     return Ok(WorkItemOutcome::default());
                 }
@@ -1377,14 +1379,16 @@ async fn peer_review_activity(
     }
 }
 
-/// The peer daemon that already answered command comment
-/// `source_comment_id`. A GitHub error counts as "none", as above.
+/// The peer daemon that `pick` finds for command comment `source_comment_id`:
+/// the one that answered it, or the one that took its repair. A GitHub error
+/// counts as "none", as above.
 async fn peer_that_answered(
     config: &AppConfig,
     github: &GitHubClient,
     repo_cfg: &RepoConfig,
     pr_number: u64,
     source_comment_id: u64,
+    pick: for<'a> fn(&'a [IssueComment], &[String], u64) -> Option<&'a str>,
 ) -> Option<String> {
     let peers = &config.defaults.peer_logins;
     if peers.is_empty() {
@@ -1394,10 +1398,7 @@ async fn peer_that_answered(
         .get_issue_comments(&repo_cfg.owner, &repo_cfg.name, pr_number)
         .await
     {
-        Ok(issue_comments) => {
-            crate::peer::peer_answered_command(&issue_comments, peers, source_comment_id)
-                .map(str::to_string)
-        }
+        Ok(issue_comments) => pick(&issue_comments, peers, source_comment_id).map(str::to_string),
         Err(err) => {
             tracing::warn!(
                 repo = %repo_cfg.full_name(),

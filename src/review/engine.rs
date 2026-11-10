@@ -2432,9 +2432,12 @@ impl ReviewEngine {
             return Err(anyhow!("harness returned empty command response"));
         }
 
-        let marker = format!(
-            "<!-- pr-reviewer-command-response command={} pr={} source_comment={} sha={} -->",
-            command, pr_data.number, source_comment_id, pr_data.head.sha
+        let marker = command_response_marker(
+            command,
+            pr_data.number,
+            source_comment_id,
+            &pr_data.head.sha,
+            repo_cfg.auto_fix.enabled,
         );
         comments::create_issue_comment(
             &self.github,
@@ -4449,6 +4452,27 @@ fn has_screenshot_references(pr_body: Option<&str>) -> bool {
         || lower.contains("screenshot")
 }
 
+/// The marker on an answer to a maintainer command. An answer to `fix` also
+/// says whether this daemon repairs: a peer daemon that sees `repair=off`
+/// still runs the repair itself (`crate::peer::peer_took_repair`).
+fn command_response_marker(
+    command: &str,
+    pr_number: u64,
+    source_comment_id: u64,
+    sha: &str,
+    auto_fix_enabled: bool,
+) -> String {
+    let repair = match (command, auto_fix_enabled) {
+        ("fix", true) => " repair=on",
+        ("fix", false) => " repair=off",
+        _ => "",
+    };
+    format!(
+        "<!-- pr-reviewer-command-response command={command} pr={pr_number} \
+         source_comment={source_comment_id} sha={sha}{repair} -->"
+    )
+}
+
 fn build_durable_in_progress_comment(pr_data: &PullRequest, status_comment: &str) -> String {
     let mut body = String::new();
     body.push_str(&durable_review_marker(pr_data.number));
@@ -4628,14 +4652,14 @@ mod tests {
         build_final_review_summary_prompt, build_final_review_transcript,
         build_finding_delta_summary, build_in_progress_comment_fallback,
         build_prior_reviews_context, build_retry_review_body, build_review_memory,
-        build_review_metadata_block, build_thread_history, durable_review_marker,
-        extract_in_progress_comment, find_durable_review_comment, finding_key, infer_pr_focus,
-        line_is_authored_by_bot, login_matches_bot, looks_like_harness_error_output,
-        looks_like_harness_transport_output, looks_like_reintroduction,
-        normalize_in_progress_comment, normalize_summary_output, pr_reviewer_project_url,
-        reconcile_finding_ledger, resolve_project_url, should_suppress_finding,
-        truncate_github_comment_body, FindingStatus, PendingFinding, ReviewMemory,
-        GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
+        build_review_metadata_block, build_thread_history, command_response_marker,
+        durable_review_marker, extract_in_progress_comment, find_durable_review_comment,
+        finding_key, infer_pr_focus, line_is_authored_by_bot, login_matches_bot,
+        looks_like_harness_error_output, looks_like_harness_transport_output,
+        looks_like_reintroduction, normalize_in_progress_comment, normalize_summary_output,
+        pr_reviewer_project_url, reconcile_finding_ledger, resolve_project_url,
+        should_suppress_finding, truncate_github_comment_body, FindingStatus, PendingFinding,
+        ReviewMemory, GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
     };
 
     fn test_user(login: &str) -> User {
@@ -4813,6 +4837,71 @@ Ship the archive feature safely.",
         assert!(body.contains("<!-- pr-reviewer-review pr=15 -->"));
         assert!(body.contains("<!-- pr-reviewer-status:in-progress pr=15 sha=abc123 -->"));
         assert!(body.contains("Taking a look."));
+    }
+
+    /// `crate::peer` reads the markers that this file writes. Build them with
+    /// the real builders, so that a format change fails here and does not
+    /// silently make two peer daemons review the same commit.
+    #[test]
+    fn peer_detection_reads_the_markers_that_the_engine_writes() {
+        use crate::peer::{peer_activity, peer_answered_command, peer_took_repair, PeerActivity};
+
+        let pr = test_pull_request_with_body(Some("Review me."));
+        let peers = vec!["peer".to_string()];
+        let now = chrono::DateTime::parse_from_rfc3339("2026-03-30T00:05:00Z")
+            .expect("time")
+            .with_timezone(&chrono::Utc);
+        let activity = |body: String| {
+            peer_activity(
+                &[],
+                &[issue_comment(1, "peer", &body)],
+                &peers,
+                pr.number,
+                &pr.head.sha,
+                1800,
+                now,
+            )
+        };
+        let peer = "peer".to_string();
+        assert_eq!(
+            activity(build_durable_in_progress_comment(&pr, "Taking a look.")),
+            PeerActivity::InProgress {
+                login: peer.clone()
+            }
+        );
+        assert_eq!(
+            activity(build_durable_skipped_comment(&pr, "docs-only")),
+            PeerActivity::Done {
+                login: peer.clone()
+            }
+        );
+        assert_eq!(
+            activity(build_durable_review_comment(
+                &pr,
+                "m",
+                ReviewVerdict::Comment,
+                "COMMENT",
+                1,
+                true,
+                false,
+                "summary",
+            )),
+            PeerActivity::Done { login: peer }
+        );
+
+        let answer = |command: &str, auto_fix: bool| {
+            let marker = command_response_marker(command, pr.number, 7, &pr.head.sha, auto_fix);
+            [issue_comment(2, "peer", &format!("{marker}\n\nDone."))]
+        };
+        assert_eq!(
+            peer_answered_command(&answer("status", false), &peers, 7),
+            Some("peer")
+        );
+        assert_eq!(
+            peer_took_repair(&answer("fix", true), &peers, 7),
+            Some("peer")
+        );
+        assert_eq!(peer_took_repair(&answer("fix", false), &peers, 7), None);
     }
 
     #[test]
