@@ -408,7 +408,14 @@ impl ReviewEngine {
                         );
                         // Free the ledger entry so the head can be reviewed
                         // once the peer's claim ends or expires.
-                        let _ = self.db.delete_review_claim(&dedupe).await;
+                        if let Err(err) = self.db.delete_review_claim(&dedupe).await {
+                            tracing::warn!(
+                                dedupe_key = %dedupe,
+                                error = %err,
+                                "could not free the review claim after a peer's head claim; \
+                                 the head is reviewed after the next daemon restart"
+                            );
+                        }
                         return Ok(ReviewRunResult {
                             repo: repo_name,
                             pr_number: pr_data.number,

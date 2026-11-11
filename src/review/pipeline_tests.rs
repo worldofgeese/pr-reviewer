@@ -1621,3 +1621,20 @@ async fn a_dry_run_sets_no_claim() {
         .unwrap();
     assert!(gh.claims.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_read_back_that_shows_only_an_expired_peer_claim_keeps_the_claim() {
+    let (run, config, db, _dir) = claim_round_setup("claim-read-back-lag").await;
+    let mut state = state_with_claims(vec![]);
+    state.rival_claim = Some(claim_status(
+        "pending",
+        "claimed by other-host at 2026-11-11T06:00:00Z",
+        20 * 60,
+    ));
+    let gh = mock_github(state);
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "completed");
+    assert_eq!(run.reviews_run(), 1);
+}

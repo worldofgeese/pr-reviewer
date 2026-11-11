@@ -57,14 +57,14 @@ pub async fn acquire(
     sha: &str,
     host: &str,
 ) -> HeadClaim {
-    let statuses = match github.get_commit_statuses(owner, repo, sha).await {
-        Ok(statuses) => statuses,
+    let read = match github.get_commit_statuses(owner, repo, sha).await {
+        Ok(read) => read,
         Err(err) => {
             tracing::warn!(repo = %format!("{owner}/{repo}"), sha, error = %err, "could not read the head claim; reviewing without one");
             return HeadClaim::Unavailable;
         }
     };
-    if let Some(peer) = fresh_claim_of_another_host(&statuses, host, Utc::now()) {
+    if let Some(peer) = fresh_claim_of_another_host(&read.statuses, host, read.server_time) {
         return HeadClaim::Contested { host: peer };
     }
 
@@ -77,13 +77,12 @@ pub async fn acquire(
         return HeadClaim::Unavailable;
     }
 
-    // Read the claim back: when two hosts claim together, the latest wins.
+    // Read the claim back: when two hosts claim together, the latest wins. Only
+    // a fresh claim of a peer wins. Anything else is a read that lags behind
+    // the write, so this host keeps its claim.
     match github.get_commit_statuses(owner, repo, sha).await {
-        Ok(statuses) => match latest_claim(&statuses) {
-            Some(latest) if holds_claim(latest, host) => HeadClaim::Held,
-            Some(latest) => HeadClaim::Contested {
-                host: claim_host(latest).unwrap_or("a peer").to_string(),
-            },
+        Ok(read) => match fresh_claim_of_another_host(&read.statuses, host, read.server_time) {
+            Some(peer) => HeadClaim::Contested { host: peer },
             None => HeadClaim::Held,
         },
         Err(err) => {
@@ -98,8 +97,8 @@ pub async fn acquire(
 /// claim is released. A claim that a peer took over in the meantime stays.
 pub async fn release(github: &GitHubClient, owner: &str, repo: &str, sha: &str, host: &str) {
     match github.get_commit_statuses(owner, repo, sha).await {
-        Ok(statuses) => {
-            if !latest_claim(&statuses).is_some_and(|latest| holds_claim(latest, host)) {
+        Ok(read) => {
+            if !latest_claim(&read.statuses).is_some_and(|latest| holds_claim(latest, host)) {
                 tracing::info!(repo = %format!("{owner}/{repo}"), sha, "the head claim is no longer ours; leaving it");
                 return;
             }
@@ -146,7 +145,9 @@ fn holds_claim(status: &CommitStatus, host: &str) -> bool {
     claim_host(status) == Some(ours.as_str())
 }
 
-/// The host of a claim that another host made less than [`CLAIM_TTL`] ago.
+/// The host of a claim that another host made less than [`CLAIM_TTL`] before
+/// `now`. Pass GitHub's clock as `now`, so that a skewed clock on this host
+/// cannot shorten or lengthen the claim.
 fn fresh_claim_of_another_host(
     statuses: &[CommitStatus],
     host: &str,

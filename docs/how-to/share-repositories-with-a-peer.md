@@ -65,7 +65,7 @@ On the **Conversation** tab, a comment from a peer's login counts as the peer's 
 Each daemon also sets a **head claim** on the head commit before a review cycle. The claim is a commit status in `pending` state with the context `pr-reviewer/claim` and a description such as `claimed by mac-1 at 2026-11-11T07:05:12Z`. You see it in the **Checks** area of the pull request. It needs no setting. The daemon uses the machine's host name, so give each machine its own host name. Anyone who can see the pull request can read that host name in the status.
 
 - A daemon skips a head commit when another host's claim is less than 15 minutes old. It checks again after 2 minutes. After 15 minutes it takes the head commit over, because the other daemon probably stopped.
-- After a daemon sets its claim, it reads the claim back. If a peer's claim is the latest, the daemon backs off and leaves the peer's claim alone.
+- After a daemon sets its claim, it reads the claim back. If the latest claim is a fresh claim of a peer, the daemon backs off and leaves the peer's claim alone.
 - When the review cycle ends, or fails, the daemon posts a `success` status with the description `released by mac-1 at ...`. GitHub cannot delete a status, so this is how a claim ends.
 - A daemon that cannot read or set the claim, for example because its token cannot write commit statuses, logs a warning and reviews anyway.
 
