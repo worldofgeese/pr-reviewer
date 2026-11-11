@@ -33,6 +33,7 @@ src/
 │   └── codex.rs         # codex exec --model <m> --skip-git-repo-check --json "<prompt>"
 ├── review/
 │   ├── engine.rs        # Pipeline orchestration: claim → context → harness → parse → post → complete
+│   ├── head_claim.rs    # Head claim: `pr-reviewer/claim` commit status that keeps two hosts off one head (acquire, read back, release)
 │   ├── prompt.rs        # Prompt construction with schema, guidelines, review-cycle and stack sections, repo custom instructions
 │   ├── policy.rs        # Review-cycle policy: review-cycle mode, finding dispositions, `same_finding`, stale change requests
 │   ├── stack.rs         # Stacked PRs: change fingerprint, base-chain/native stack detection, stack prompt context
@@ -92,6 +93,7 @@ Simple `Confidence { level: ConfidenceLevel, justification: String }` where leve
 - DB claim lock prevents concurrent duplicate reviews (unique constraint on dedupe_key)
 - GitHub-side check prevents re-posting if DB is wiped (queries existing reviews for bot + SHA match)
 - Peer daemons (`defaults.peer_logins`) under other accounts: before a review, command or repair, `daemon::process_work_item` asks `peer::peer_activity` / `peer::peer_answered_command`; a peer's work counts only with a pr-reviewer marker from the peer's login. A peer "in progress" defers the item (`defer_work_item`, `work_queue.not_before`). `standby_delay_secs` sets `not_before` at enqueue so a primary peer goes first
+- Head claim (`review/head_claim.rs`): after the database claim and before the in-progress comment, `ReviewEngine::review_existing_pr` sets a `pending` commit status, context `pr-reviewer/claim`, description `claimed by <host> at <UTC time>`, on the head. It skips the head (`skipped:claimed-by-peer`, which `process_work_item` defers by `PEER_IN_PROGRESS_RECHECK_SECS`) when the latest claim names another host and is under `CLAIM_TTL` (15 minutes) old by GitHub's `created_at`. After it sets the claim it reads it back and backs off when the latest claim is not its own. It releases the claim with a `success` status (`released by <host> …`) when the review cycle ends or fails, unless a peer has taken the claim over meanwhile. Dry runs, heads that already have a review, and GitHub errors (a token without commit-status write access, a 5xx) set no claim and never stop the review. It narrows the race but is not a lock: two hosts that claim in the same instant can both read their own claim back. Host name: `nix::unistd::gethostname`. Tests: `pipeline_tests.rs` (`claim_*`) and `head_claim::tests`.
 - One daemon per config directory: an exclusive `flock` on `daemon.lock`, held for the process lifetime. Only after it holds the lock does start-up requeue every `claimed` work item and drop unfinished review claims (`requeue_orphaned_claims`)
 
 ### Self-Review Detection (engine.rs)

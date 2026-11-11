@@ -38,6 +38,12 @@ _Avoid_: other instance, second bot
 One review that pr-reviewer posts on the head commit of a pull request.
 _Avoid_: review round, round, pass, iteration
 
+**Head claim**:
+A `pending` commit status with the context `pr-reviewer/claim` that a daemon
+sets on the head commit of a pull request before a review cycle. It tells a
+peer daemon to skip that head commit for 15 minutes.
+_Avoid_: lock, review claim (that is the database entry), claim status
+
 **Finding**:
 One problem that a review cycle reports about a pull request.
 _Avoid_: issue, comment

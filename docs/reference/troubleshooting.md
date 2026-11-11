@@ -266,6 +266,11 @@ If duplicates are appearing:
 1. Confirm you only have one instance of pr-reviewer running: `pr-reviewer status`
 2. Confirm the `bot_name` in config matches what was used when the prior review was posted
 3. If another person runs a daemon on the same repositories under their own account, name each other in `defaults.peer_logins` and give one daemon a `defaults.standby_delay_secs`. See [Share repositories with a peer daemon](../how-to/share-repositories-with-a-peer.md).
+4. Open the head commit's statuses on the pull request. Look for `pr-reviewer/claim`. If it never appears, the daemon's token cannot write commit statuses (it needs `repo:status` or "Commit statuses: read and write"); the daemon then logs `could not set the head claim` and reviews without a [head claim](../how-to/share-repositories-with-a-peer.md#the-head-claim). If both daemons show the same host name in their claims, give each machine its own host name.
+
+### A pull request is not reviewed and the log says "a peer host holds the head claim"
+
+Another host set the `pr-reviewer/claim` status on the head commit less than 15 minutes ago. The daemon checks again after 2 minutes and takes the head commit over once the claim is 15 minutes old. A manual `pr-reviewer review` skips the head commit too. To review sooner, ask the peer's owner to finish or stop their review cycle: the daemon then posts a `released` status.
 
 ### Review stuck in "in-progress" state after a crash
 

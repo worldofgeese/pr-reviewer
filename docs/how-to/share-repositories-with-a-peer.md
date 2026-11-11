@@ -9,6 +9,7 @@ Prerequisites:
 - Both daemons run a release that has the `peer_logins` setting. Run `pr-reviewer config get defaults.peer_logins` to check.
 - You know the GitHub login of each daemon. Run `gh api user --jq .login` as the user that the daemon's token belongs to.
 - Both daemons watch the same repositories. Run `pr-reviewer list` on each machine to compare.
+- Each daemon's GitHub token can write commit statuses: the `repo:status` scope on a classic token, or "Commit statuses: read and write" on a fine-grained token. Without it, the daemon cannot set a [head claim](#the-head-claim) and relies on the checks below.
 
 ## Configure the primary daemon
 
@@ -59,13 +60,25 @@ For commands such as `@pr-reviewer status` and `@pr-reviewer fix`, the daemon sk
 
 On the **Conversation** tab, a comment from a peer's login counts as the peer's work only when it carries a pr-reviewer marker. So a person who uses the peer's account by hand can still give the bot commands there. In review threads, the daemon ignores every comment from a peer's login, as it ignores its own.
 
+## The head claim
+
+Each daemon also sets a **head claim** on the head commit before a review cycle. The claim is a commit status in `pending` state with the context `pr-reviewer/claim` and a description such as `claimed by mac-1 at 2026-11-11T07:05:12Z`. You see it in the **Checks** area of the pull request. It needs no setting. The daemon uses the machine's host name, so give each machine its own host name. Anyone who can see the pull request can read that host name in the status.
+
+- A daemon skips a head commit when another host's claim is less than 15 minutes old. It checks again after 2 minutes. After 15 minutes it takes the head commit over, because the other daemon probably stopped.
+- After a daemon sets its claim, it reads the claim back. If a peer's claim is the latest, the daemon backs off and leaves the peer's claim alone.
+- When the review cycle ends, or fails, the daemon posts a `success` status with the description `released by mac-1 at ...`. GitHub cannot delete a status, so this is how a claim ends.
+- A daemon that cannot read or set the claim, for example because its token cannot write commit statuses, logs a warning and reviews anyway.
+
+The claim narrows the race but is not a lock. If both daemons claim in the same second, both can read their own claim back and both review. A review cycle that runs longer than 15 minutes can also lose its claim to a peer.
+
 ## Limits
 
 - A review that a peer posted earlier does not count toward this daemon's [review cycles](../explanation/how-a-review-works.md#review-cycles). If the standby reviews a pull request that the primary reviewed before, the standby starts at review cycle 1 and can raise findings again that the primary's open threads already hold.
 - Each daemon dismisses only its own change requests. A change request from the standby stays until the standby dismisses it, or until a person does.
 - A mention in a review thread that a peer started waits for that peer. When the peer is off, it answers after it starts again.
 - A daemon uses its own `harness.timeout_secs` to decide that a peer's status comment is stale. Give both daemons the same value.
-- When both daemons are on and a review on the primary takes longer than the delay, before the primary posts its status comment, both can review the same head commit. Raise the delay if you see this.
+- When both daemons are on and a review on the primary takes longer than the delay, before the primary posts its status comment, both can review the same head commit. The head claim makes this rare. Raise the delay if you still see it.
+- Both daemons need distinct host names. Two machines with the same host name cannot tell their claims apart.
 
 ## Next steps
 

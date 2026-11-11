@@ -8,7 +8,7 @@ use reqwest::header::{HeaderMap, ACCEPT, ETAG, IF_NONE_MATCH, LINK, USER_AGENT};
 use reqwest::{Client, Method};
 
 use crate::github::types::{
-    ContentResponse, CreateIssueCommentRequest, CreatePullRequestRequest,
+    CommitStatus, ContentResponse, CreateIssueCommentRequest, CreatePullRequestRequest,
     CreatePullRequestResponse, CreateRefRequest, CreateReplyRequest, CreateReviewRequest,
     GitRefResponse, IssueComment, PrFile, PullRequest, PullRequestReview, ReviewComment,
     UpdateContentRequest, UpdateIssueCommentRequest,
@@ -821,6 +821,29 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// The latest commit status of each context on `sha`, from GitHub's
+    /// combined status. Needs read access to the repository.
+    pub async fn get_commit_statuses(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<CommitStatus>> {
+        #[derive(serde::Deserialize)]
+        struct Combined {
+            statuses: Vec<CommitStatus>,
+        }
+        let path = format!("/repos/{owner}/{repo}/commits/{sha}/status?per_page=100");
+        let resp = self
+            .request(Method::GET, &path)
+            .send_named()
+            .await
+            .context("GitHub get commit statuses failed")?;
+        self.update_rate_state(resp.headers());
+        let combined: Combined = handle_json(resp).await?;
+        Ok(combined.statuses)
+    }
+
     /// `https://api.github.com/graphql`, or `https://HOST/api/graphql` for
     /// GitHub Enterprise Server, whose REST base ends in `/api/v3`.
     fn graphql_url(&self) -> String {
@@ -1268,6 +1291,38 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_commit_statuses_lists_the_latest_status_of_each_context() {
+        use httptest::{matchers::*, responders::*, Expectation, Server};
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path(
+                "GET",
+                "/repos/o/r/commits/abc123/status",
+            ))
+            .respond_with(json_encoded(serde_json::json!({
+                "state": "pending",
+                "statuses": [{
+                    "context": "pr-reviewer/claim",
+                    "state": "pending",
+                    "description": "claimed by box at 2026-11-11T07:00:00Z",
+                    "created_at": "2026-11-11T07:00:01Z",
+                }],
+            }))),
+        );
+        let client = GitHubClient::new_with_base("t".into(), &server.url_str("")).unwrap();
+        let statuses = client
+            .get_commit_statuses("o", "r", "abc123")
+            .await
+            .unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].context, "pr-reviewer/claim");
+        assert_eq!(
+            statuses[0].description.as_deref(),
+            Some("claimed by box at 2026-11-11T07:00:00Z")
+        );
     }
 
     /// Accepts connections and never answers, like a half-open GitHub.

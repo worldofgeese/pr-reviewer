@@ -93,6 +93,15 @@ pub struct PullRequestReview {
     pub submitted_at: Option<String>,
 }
 
+/// One commit status as GitHub reports it for a commit.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommitStatus {
+    pub context: String,
+    pub state: String,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewComment {
     pub id: u64,

@@ -170,6 +170,12 @@ struct GitHubState {
     commit_status_status: u16,
     /// Root comment ids of the review threads a human resolved.
     resolved: Vec<u64>,
+    /// Status for the PR diff request (200 = works).
+    diff_status: u16,
+    /// `pr-reviewer/claim` statuses on the head before the round, oldest first.
+    claims: Vec<Value>,
+    /// A peer's claim that lands right after this host's claim does.
+    rival_claim: Option<Value>,
 }
 
 impl GitHubState {
@@ -185,8 +191,22 @@ impl GitHubState {
             post_review_status: 200,
             commit_status_status: 201,
             resolved: vec![],
+            diff_status: 200,
+            claims: vec![],
+            rival_claim: None,
         }
     }
+}
+
+/// A `pr-reviewer/claim` status as GitHub reports it, made `age_secs` ago.
+fn claim_status(state: &str, description: &str, age_secs: i64) -> Value {
+    let created = chrono::Utc::now() - chrono::Duration::seconds(age_secs);
+    json!({
+        "context": "pr-reviewer/claim",
+        "state": state,
+        "description": description,
+        "created_at": created.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    })
 }
 
 struct MockGitHub {
@@ -195,8 +215,11 @@ struct MockGitHub {
     /// The bodies of the PR's issue comments, in creation order.
     issue_comments: Arc<Mutex<Vec<Value>>>,
     dismissed: Arc<Mutex<Vec<String>>>,
-    /// The bodies of the commit status requests for the PR's head sha.
+    /// The bodies of the commit status requests for the PR's head sha, except
+    /// the `pr-reviewer/claim` ones.
     statuses: Arc<Mutex<Vec<Value>>>,
+    /// The `pr-reviewer/claim` statuses on the head, oldest first.
+    claims: Arc<Mutex<Vec<Value>>>,
 }
 
 fn mock_github(state: GitHubState) -> MockGitHub {
@@ -226,7 +249,7 @@ fn mock_github(state: GitHubState) -> MockGitHub {
             request::headers(contains(("accept", "application/vnd.github.v3.diff"))),
         ])
         .times(..)
-        .respond_with(status_code(200).body(state.diff.clone())),
+        .respond_with(status_code(state.diff_status).body(state.diff.clone())),
     );
     if state.list_reviews_status == 200 {
         server.expect(
@@ -355,24 +378,48 @@ fn mock_github(state: GitHubState) -> MockGitHub {
             .respond_with(json_encoded(json!({}))),
         );
     }
+    let head_sha = state.pr["head"]["sha"].as_str().unwrap().to_string();
     let statuses = Arc::new(Mutex::new(Vec::new()));
+    let claims = Arc::new(Mutex::new(state.claims.clone()));
     let sink = statuses.clone();
+    let claim_sink = claims.clone();
+    let rival_claim = state.rival_claim.clone();
     server.expect(
         Expectation::matching(all_of![
-            request::method_path(
-                "POST",
-                format!(
-                    "/repos/o/r/statuses/{}",
-                    state.pr["head"]["sha"].as_str().unwrap()
-                )
-            ),
+            request::method_path("POST", format!("/repos/o/r/statuses/{head_sha}")),
             request::body(json_decoded(move |body: &Value| {
-                sink.lock().unwrap().push(body.clone());
+                if body["context"] == "pr-reviewer/claim" {
+                    let mut claims = claim_sink.lock().unwrap();
+                    claims.push(json!({
+                        "context": body["context"], "state": body["state"],
+                        "description": body["description"],
+                        "created_at": chrono::Utc::now()
+                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    }));
+                    if body["state"] == "pending" {
+                        claims.extend(rival_claim.clone());
+                    }
+                } else {
+                    sink.lock().unwrap().push(body.clone());
+                }
                 true
             })),
         ])
         .times(..)
         .respond_with(status_code(state.commit_status_status).body("{}")),
+    );
+    // GitHub's combined status: the latest status of each context.
+    let latest = claims.clone();
+    server.expect(
+        Expectation::matching(request::method_path(
+            "GET",
+            format!("/repos/o/r/commits/{head_sha}/status"),
+        ))
+        .times(..)
+        .respond_with(move || {
+            json_encoded(json!({"statuses": latest.lock().unwrap().last().cloned()
+                .into_iter().collect::<Vec<_>>()}))
+        }),
     );
     MockGitHub {
         server,
@@ -380,6 +427,7 @@ fn mock_github(state: GitHubState) -> MockGitHub {
         issue_comments,
         dismissed,
         statuses,
+        claims,
     }
 }
 
@@ -415,7 +463,7 @@ async fn review_round(
 ) -> crate::review::engine::ReviewRunResult {
     let client =
         GitHubClient::new_with_base("test-token".into(), &github.server.url_str("")).unwrap();
-    let mut engine = ReviewEngine::new(config.clone(), client, db.clone());
+    let mut engine = ReviewEngine::new(config.clone(), client, db.clone()).with_host("test-host");
     engine.init().await;
     engine
         .review_pr(&config.repos[0], number, ReviewOptions::default())
@@ -431,7 +479,7 @@ async fn try_review_round(
 ) -> anyhow::Result<crate::review::engine::ReviewRunResult> {
     let client =
         GitHubClient::new_with_base("test-token".into(), &github.server.url_str("")).unwrap();
-    let mut engine = ReviewEngine::new(config.clone(), client, db.clone());
+    let mut engine = ReviewEngine::new(config.clone(), client, db.clone()).with_host("test-host");
     engine.init().await;
     engine
         .review_pr(&config.repos[0], number, ReviewOptions::default())
@@ -491,6 +539,9 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         post_review_status: 200,
         commit_status_status: 201,
         resolved: vec![],
+        diff_status: 200,
+        claims: vec![],
+        rival_claim: None,
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "completed");
@@ -545,6 +596,9 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         post_review_status: 200,
         commit_status_status: 201,
         resolved: vec![],
+        diff_status: 200,
+        claims: vec![],
+        rival_claim: None,
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "completed");
@@ -608,6 +662,9 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         post_review_status: 200,
         commit_status_status: 201,
         resolved: vec![],
+        diff_status: 200,
+        claims: vec![],
+        rival_claim: None,
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "skipped:unchanged-diff");
@@ -660,6 +717,9 @@ async fn review_lifecycle_caps_rounds_skips_rebases_and_escalates_critical_findi
         post_review_status: 200,
         commit_status_status: 201,
         resolved: vec![],
+        diff_status: 200,
+        claims: vec![],
+        rival_claim: None,
     });
     let result = review_round(&config, &db, &gh, 7).await;
     assert_eq!(result.status, "completed");
@@ -751,6 +811,9 @@ async fn stacked_child_does_not_repeat_its_parents_findings() {
         post_review_status: 200,
         commit_status_status: 201,
         resolved: vec![],
+        diff_status: 200,
+        claims: vec![],
+        rival_claim: None,
     });
     let result = review_round(&config, &db, &gh, 8).await;
     assert_eq!(result.status, "completed");
@@ -1390,4 +1453,171 @@ async fn a_dry_run_posts_no_status() {
     .await;
     assert_eq!(result.status, "completed:dry-run");
     assert!(statuses.is_empty());
+}
+
+/// The state and description of each claim status that GitHub received.
+fn claim_log(gh: &MockGitHub) -> Vec<(String, String)> {
+    gh.claims
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["state"].as_str().unwrap().to_string(),
+                c["description"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+async fn claim_round_setup(name: &str) -> (Run, Arc<AppConfig>, Database, tempfile::TempDir) {
+    let run = Run::new(name);
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    run.respond(1, review_json("no_issues", json!([])));
+    (run, config, db, db_dir)
+}
+
+fn state_with_claims(claims: Vec<Value>) -> GitHubState {
+    let mut state = GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    );
+    state.claims = claims;
+    state
+}
+
+#[tokio::test]
+async fn a_review_cycle_claims_the_head_first_and_clears_the_claim_when_it_ends() {
+    let (run, config, db, _dir) = claim_round_setup("claim-set-and-cleared").await;
+    let gh = mock_github(state_with_claims(vec![]));
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "completed");
+    assert_eq!(run.reviews_run(), 1);
+    let log = claim_log(&gh);
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[0].0, "pending");
+    assert!(log[0].1.starts_with("claimed by test-host at "), "{log:?}");
+    assert_eq!(log[1].0, "success");
+    assert!(log[1].1.starts_with("released by test-host at "), "{log:?}");
+}
+
+#[tokio::test]
+async fn a_head_with_a_fresh_claim_from_another_host_is_skipped() {
+    let (run, config, db, _dir) = claim_round_setup("claim-skip-fresh").await;
+    let gh = mock_github(state_with_claims(vec![claim_status(
+        "pending",
+        "claimed by other-host at 2026-11-11T07:00:00Z",
+        60,
+    )]));
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "skipped:claimed-by-peer");
+    assert_eq!(run.reviews_run(), 0);
+    assert!(gh.posted_reviews.lock().unwrap().is_empty());
+    assert!(comment_bodies(&gh).is_empty());
+    assert_eq!(gh.claims.lock().unwrap().len(), 1, "no claim was added");
+
+    // The skip leaves nothing behind, so the head can be reviewed later.
+    let free = mock_github(state_with_claims(vec![]));
+    assert_eq!(
+        review_round(&config, &db, &free, 7).await.status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn a_claim_older_than_the_ttl_is_taken_over() {
+    let (run, config, db, _dir) = claim_round_setup("claim-take-over").await;
+    let gh = mock_github(state_with_claims(vec![claim_status(
+        "pending",
+        "claimed by other-host at 2026-11-11T06:00:00Z",
+        16 * 60,
+    )]));
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "completed");
+    assert_eq!(run.reviews_run(), 1);
+    let log = claim_log(&gh);
+    assert_eq!(log.len(), 3, "{log:?}");
+    assert!(log[1].1.starts_with("claimed by test-host at "), "{log:?}");
+    assert!(log[2].1.starts_with("released by test-host at "), "{log:?}");
+}
+
+#[tokio::test]
+async fn a_host_backs_off_when_the_read_back_shows_a_newer_claim_from_a_peer() {
+    let (run, config, db, _dir) = claim_round_setup("claim-read-back-conflict").await;
+    let mut state = state_with_claims(vec![]);
+    state.rival_claim = Some(claim_status(
+        "pending",
+        "claimed by other-host at 2026-11-11T07:00:00Z",
+        0,
+    ));
+    let gh = mock_github(state);
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "skipped:claimed-by-peer");
+    assert_eq!(run.reviews_run(), 0);
+    assert!(gh.posted_reviews.lock().unwrap().is_empty());
+    let log = claim_log(&gh);
+    assert_eq!(
+        log.len(),
+        2,
+        "the loser leaves the winner's claim alone: {log:?}"
+    );
+    assert!(log[1].1.starts_with("claimed by other-host at "), "{log:?}");
+}
+
+#[tokio::test]
+async fn a_failed_review_cycle_clears_the_claim() {
+    let (_run, config, db, _dir) = claim_round_setup("claim-cleared-on-failure").await;
+    // GitHub cannot serve the diff, so the review cycle fails.
+    let mut state = state_with_claims(vec![]);
+    state.diff_status = 500;
+    let gh = mock_github(state);
+
+    let result = try_review_round(&config, &db, &gh, 7).await;
+
+    assert!(result.is_err());
+    let log = claim_log(&gh);
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[1].0, "success");
+    assert!(log[1].1.starts_with("released by test-host at "), "{log:?}");
+}
+
+#[tokio::test]
+async fn a_github_error_on_the_claim_does_not_stop_the_review() {
+    let (run, config, db, _dir) = claim_round_setup("claim-github-error").await;
+    let mut state = state_with_claims(vec![]);
+    state.commit_status_status = 403;
+    let gh = mock_github(state);
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "completed");
+    assert_eq!(run.reviews_run(), 1);
+}
+
+#[tokio::test]
+async fn a_dry_run_sets_no_claim() {
+    let (_run, config, db, _dir) = claim_round_setup("claim-dry-run").await;
+    let gh = mock_github(state_with_claims(vec![]));
+    let client = GitHubClient::new_with_base("test-token".into(), &gh.server.url_str("")).unwrap();
+    let mut engine = ReviewEngine::new(config.clone(), client, db.clone()).with_host("test-host");
+    engine.init().await;
+    let options = ReviewOptions {
+        dry_run: true,
+        ..ReviewOptions::default()
+    };
+    engine
+        .review_pr(&config.repos[0], 7, options)
+        .await
+        .unwrap();
+    assert!(gh.claims.lock().unwrap().is_empty());
 }
