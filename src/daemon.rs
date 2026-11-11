@@ -22,6 +22,7 @@ use crate::github::types::{IssueComment, PullRequest};
 use crate::github::{comments, pr};
 use crate::peer::PeerActivity;
 use crate::review::engine::{ReviewEngine, ReviewOptions};
+use crate::review::head_claim;
 use crate::store::db::{Database, RequeuedClaims, WorkItem, WorkItemInsert};
 
 const RATE_LIMIT_TOTAL: u32 = 5000;
@@ -32,6 +33,9 @@ const WORK_KIND_REPAIR_PR: &str = "repair_pr";
 const STOP_WAIT: Duration = Duration::from_secs(10);
 /// How often to read the review threads of a reviewed PR for human answers.
 const HUMAN_ANSWER_CHECK_INTERVAL: Duration = Duration::from_secs(120);
+/// How often to look for an abandoned head claim on a reviewed PR: once per
+/// [`head_claim::CLAIM_TTL`], the age at which a claim counts as abandoned.
+const STALE_CLAIM_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 pub async fn start(
     config: AppConfig,
@@ -100,6 +104,12 @@ pub async fn start(
     // change it, so the thread check below needs its own copy.
     let mut open_prs: HashMap<String, Vec<PullRequest>> = HashMap::new();
     let mut human_answers_checked: HashMap<(String, u64), Instant> = HashMap::new();
+    let mut stale_claims_checked: HashMap<(String, u64), Instant> = HashMap::new();
+    // True until the first pass over the repos ends: only then can no review
+    // cycle of this process hold a claim.
+    let mut in_first_pass = true;
+    let mut claims_swept_at_start: HashSet<String> = HashSet::new();
+    let host = head_claim::local_host();
 
     loop {
         while workers.try_join_next().is_some() {}
@@ -211,6 +221,9 @@ pub async fn start(
                     // current state before archiving anything missing from the set.
                     let can_trust_open_set = complete;
                     human_answers_checked.retain(|(repo, number), _| {
+                        repo != &repo_name || open_pr_numbers.contains(number)
+                    });
+                    stale_claims_checked.retain(|(repo, number), _| {
                         repo != &repo_name || open_pr_numbers.contains(number)
                     });
                     open_prs.insert(repo_name.clone(), prs.clone());
@@ -473,6 +486,35 @@ pub async fn start(
                 }
             }
 
+            // A daemon that died inside a review cycle leaves a `pending` head
+            // claim that never expires, and an already-reviewed head is never
+            // claimed again. Release it here, from the cached PR list, because
+            // a 304 on the list does not reach the code above. See `claim_sweep`.
+            if !config.defaults.dry_run && open_prs.contains_key(&repo_name) {
+                let at_start = in_first_pass && claims_swept_at_start.insert(repo_name.clone());
+                for pr in open_prs.get(&repo_name).into_iter().flatten() {
+                    let key = (repo_name.clone(), pr.number);
+                    let reviewed = db
+                        .get_pr_state(&repo_name, pr.number as i64)
+                        .await?
+                        .and_then(|state| state.last_reviewed_sha)
+                        .is_some_and(|sha| sha == pr.head.sha);
+                    let since_last = stale_claims_checked.get(&key).map(Instant::elapsed);
+                    if let Some(include_own) = claim_sweep(at_start, reviewed, since_last) {
+                        stale_claims_checked.insert(key, Instant::now());
+                        head_claim::release_abandoned(
+                            &github,
+                            &repo_cfg.owner,
+                            &repo_cfg.name,
+                            &pr.head.sha,
+                            &host,
+                            include_own,
+                        )
+                        .await;
+                    }
+                }
+            }
+
             // A human who resolves or rebuts the bot's thread changes neither
             // the head nor the PR list, so no review runs. Apply the answer
             // here, so the bot's change request does not block until a push.
@@ -516,6 +558,7 @@ pub async fn start(
             &auto_fix_detected,
         )
         .await?;
+        in_first_pass = false;
 
         while workers.try_join_next().is_some() {}
 
@@ -1085,6 +1128,19 @@ struct WorkItemOutcome {
     deferred: bool,
 }
 
+/// Whether to look for an abandoned head claim on a PR head now, and if so,
+/// whether a claim of this host counts as abandoned. `at_start` is true for
+/// the first look at a repo, before any review cycle of this process ran. A
+/// head under review is left to its own cycle. `since_last_check` is the time
+/// since the last look at this PR.
+fn claim_sweep(at_start: bool, reviewed: bool, since_last_check: Option<Duration>) -> Option<bool> {
+    if at_start {
+        return Some(true);
+    }
+    let due = since_last_check.is_none_or(|elapsed| elapsed >= STALE_CLAIM_CHECK_INTERVAL);
+    (reviewed && due).then_some(false)
+}
+
 async fn spawn_pending_work_items(
     config: &AppConfig,
     db: &Database,
@@ -1565,6 +1621,26 @@ fn now_epoch() -> u64 {
 mod tests {
     use super::*;
     use crate::github::types::User;
+
+    #[test]
+    fn the_start_up_sweep_releases_claims_of_this_host_too() {
+        assert_eq!(claim_sweep(true, false, None), Some(true));
+        assert_eq!(claim_sweep(true, true, None), Some(true));
+    }
+
+    #[test]
+    fn a_later_sweep_covers_reviewed_heads_once_per_interval() {
+        let fresh = Some(Duration::from_secs(60));
+        let due = Some(STALE_CLAIM_CHECK_INTERVAL);
+        assert_eq!(claim_sweep(false, true, None), Some(false));
+        assert_eq!(claim_sweep(false, true, due), Some(false));
+        assert_eq!(claim_sweep(false, true, fresh), None);
+    }
+
+    #[test]
+    fn a_later_sweep_leaves_a_head_under_review_to_its_own_cycle() {
+        assert_eq!(claim_sweep(false, false, None), None);
+    }
 
     fn test_user(login: &str) -> User {
         User {

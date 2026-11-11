@@ -11,6 +11,10 @@
 //! The claim is a best-effort guard, not a lock. Two hosts that claim in the
 //! same instant can both read their own claim back. A GitHub error never
 //! stops a review cycle: the daemon logs it and reviews without a claim.
+//!
+//! GitHub statuses never expire, so a daemon that dies inside a review cycle
+//! leaves a `pending` claim. [`release_abandoned`] ends it: at start-up for the
+//! claims of this host, and later for any claim older than [`CLAIM_TTL`].
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 
@@ -117,6 +121,42 @@ pub async fn release(github: &GitHubClient, owner: &str, repo: &str, sha: &str, 
     }
 }
 
+/// Release the latest claim on `sha` when nobody can still be working on it,
+/// so a daemon that died inside a review cycle does not leave the head
+/// `pending` for good. GitHub statuses never expire, and a merge rule that
+/// needs every check to finish waits on a `pending` one. Posts the same
+/// `success` status as [`release`]. A fresh claim of a peer stays. See
+/// [`abandoned_claim`] for what counts as abandoned. `include_own` is for
+/// start-up, when no review cycle of `host` can be running.
+pub async fn release_abandoned(
+    github: &GitHubClient,
+    owner: &str,
+    repo: &str,
+    sha: &str,
+    host: &str,
+    include_own: bool,
+) {
+    let read = match github.get_commit_statuses(owner, repo, sha).await {
+        Ok(read) => read,
+        Err(err) => {
+            tracing::warn!(repo = %format!("{owner}/{repo}"), sha, error = %err, "could not read the head claim to look for an abandoned one");
+            return;
+        }
+    };
+    let Some(abandoned) = abandoned_claim(&read.statuses, host, read.server_time, include_own)
+    else {
+        return;
+    };
+    tracing::warn!(repo = %format!("{owner}/{repo}"), sha, claimed_by = %abandoned, "releasing an abandoned head claim");
+    let description = describe("released", host, Utc::now());
+    if let Err(err) = github
+        .create_commit_status(owner, repo, sha, "success", CLAIM_CONTEXT, &description)
+        .await
+    {
+        tracing::warn!(repo = %format!("{owner}/{repo}"), sha, error = %err, "could not release the abandoned head claim");
+    }
+}
+
 fn describe(verb: &str, host: &str, now: DateTime<Utc>) -> String {
     let host: String = host.chars().take(MAX_HOST_CHARS).collect();
     format!(
@@ -160,6 +200,25 @@ fn fresh_claim_of_another_host(
     }
     let claimed_at = DateTime::parse_from_rfc3339(&claim.created_at).ok()?;
     (now.signed_duration_since(claimed_at) < CLAIM_TTL).then(|| peer.to_string())
+}
+
+/// The host of the latest claim on a head when it is `pending` and
+/// abandoned: older than [`CLAIM_TTL`] by GitHub's clock (`now`), whoever made
+/// it, or made by `host` when `include_own` says that no cycle of `host` can
+/// still run. A claim whose time cannot be read is left alone.
+fn abandoned_claim<'a>(
+    statuses: &'a [CommitStatus],
+    host: &str,
+    now: DateTime<Utc>,
+    include_own: bool,
+) -> Option<&'a str> {
+    let claim = latest_claim(statuses)?;
+    let claimer = claim_host(claim)?;
+    if include_own && holds_claim(claim, host) {
+        return Some(claimer);
+    }
+    let claimed_at = DateTime::parse_from_rfc3339(&claim.created_at).ok()?;
+    (now.signed_duration_since(claimed_at) >= CLAIM_TTL).then_some(claimer)
 }
 
 #[cfg(test)]
@@ -254,5 +313,64 @@ mod tests {
             "2026-11-11T07:09:00Z",
         );
         assert_eq!(claim_host(&s), Some("lab at the-bench"));
+    }
+
+    #[test]
+    fn a_pending_claim_older_than_the_ttl_is_abandoned_whoever_made_it() {
+        let statuses = [status(
+            "pending",
+            "claimed by mac-2 at 2026-11-11T06:54:00Z",
+            "2026-11-11T06:54:00Z",
+        )];
+        assert_eq!(
+            abandoned_claim(&statuses, "mac-1", now(), false),
+            Some("mac-2")
+        );
+    }
+
+    #[test]
+    fn a_fresh_claim_of_a_peer_is_never_abandoned() {
+        let statuses = [status(
+            "pending",
+            "claimed by mac-2 at 2026-11-11T07:05:00Z",
+            "2026-11-11T07:05:00Z",
+        )];
+        assert_eq!(abandoned_claim(&statuses, "mac-1", now(), false), None);
+        assert_eq!(abandoned_claim(&statuses, "mac-1", now(), true), None);
+    }
+
+    #[test]
+    fn a_fresh_claim_of_this_host_is_abandoned_only_when_asked() {
+        // Before a restart, no review cycle of this host can still run.
+        let statuses = [status(
+            "pending",
+            "claimed by mac-1 at 2026-11-11T07:09:00Z",
+            "2026-11-11T07:09:00Z",
+        )];
+        assert_eq!(abandoned_claim(&statuses, "mac-1", now(), false), None);
+        assert_eq!(
+            abandoned_claim(&statuses, "mac-1", now(), true),
+            Some("mac-1")
+        );
+    }
+
+    #[test]
+    fn a_released_claim_is_not_abandoned() {
+        let statuses = [status(
+            "success",
+            "released by mac-2 at 2026-11-11T06:00:00Z",
+            "2026-11-11T06:00:00Z",
+        )];
+        assert_eq!(abandoned_claim(&statuses, "mac-1", now(), true), None);
+    }
+
+    #[test]
+    fn a_claim_with_an_unreadable_time_is_left_alone() {
+        let statuses = [status(
+            "pending",
+            "claimed by mac-2 at 2026-11-11T06:00:00Z",
+            "not a time",
+        )];
+        assert_eq!(abandoned_claim(&statuses, "mac-1", now(), false), None);
     }
 }

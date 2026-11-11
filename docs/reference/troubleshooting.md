@@ -268,6 +268,14 @@ If duplicates are appearing:
 3. If another person runs a daemon on the same repositories under their own account, name each other in `defaults.peer_logins` and give one daemon a `defaults.standby_delay_secs`. See [Share repositories with a peer daemon](../how-to/share-repositories-with-a-peer.md).
 4. Open the head commit's statuses on the pull request. Look for `pr-reviewer/claim`. If it never appears, the daemon's token cannot write commit statuses (it needs `repo:status` or "Commit statuses: read and write"); the daemon then logs `could not set the head claim` and reviews without a [head claim](../how-to/share-repositories-with-a-peer.md#the-head-claim). If both daemons show the same host name in their claims, give each machine its own host name.
 
+### A pull request stays blocked on a `pr-reviewer/claim` check that is pending
+
+The daemon that set the [head claim](../how-to/share-repositories-with-a-peer.md#the-head-claim) stopped before it released the claim. The claim is `pending` only during a review cycle, and the daemon ends it with a `success` status. A running daemon releases a claim that is older than 15 minutes within about 15 more minutes (log line `releasing an abandoned head claim`), and a daemon that starts again releases its own claim at once. To clear it by hand, post the status that the daemon would post:
+
+```bash
+gh api repos/OWNER/REPO/statuses/HEAD_SHA -f state=success -f context=pr-reviewer/claim -f description="released by hand"
+```
+
 ### A pull request is not reviewed and the log says "a peer host holds the head claim"
 
 Another host set the `pr-reviewer/claim` status on the head commit less than 15 minutes ago. The daemon checks again after 2 minutes and takes the head commit over once the claim is 15 minutes old. A manual `pr-reviewer review` skips the head commit too. To review sooner, ask the peer's owner to finish or stop their review cycle: the daemon then posts a `released` status.

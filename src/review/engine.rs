@@ -463,6 +463,19 @@ impl ReviewEngine {
                         ),
                     }
                 }
+            } else {
+                // Nothing to review, so nothing acquires or releases the head
+                // again. A claim left by a dead daemon would block a merge for
+                // good.
+                head_claim::release_abandoned(
+                    &self.github,
+                    &repo_cfg.owner,
+                    &repo_cfg.name,
+                    &pr_data.head.sha,
+                    &self.host,
+                    false,
+                )
+                .await;
             }
         }
 
