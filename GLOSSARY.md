@@ -41,7 +41,9 @@ _Avoid_: review round, round, pass, iteration
 **Head claim**:
 A `pending` commit status with the context `pr-reviewer/claim` that a daemon
 sets on the head commit of a pull request before a review cycle. It tells a
-peer daemon to skip that head commit for 15 minutes.
+peer daemon to skip that head commit for 15 minutes. The daemon ends the claim
+with a `success` status, which it also posts for a claim that a dead daemon left
+behind.
 _Avoid_: lock, review claim (that is the database entry), claim status
 
 **Finding**:

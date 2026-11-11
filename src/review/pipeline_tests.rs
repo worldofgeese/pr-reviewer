@@ -1638,3 +1638,92 @@ async fn a_read_back_that_shows_only_an_expired_peer_claim_keeps_the_claim() {
     assert_eq!(result.status, "completed");
     assert_eq!(run.reviews_run(), 1);
 }
+
+/// An already-reviewed head: the bot's review on `s1` is on GitHub.
+fn reviewed_state_with_claims(claims: Vec<Value>) -> GitHubState {
+    let mut state = state_with_claims(claims);
+    state.reviews = vec![bot_review(1, "s1", "COMMENTED")];
+    state
+}
+
+#[tokio::test]
+async fn a_stale_claim_on_an_already_reviewed_head_is_released() {
+    let (_run, config, db, _dir) = claim_round_setup("claim-stale-reviewed").await;
+    let gh = mock_github(reviewed_state_with_claims(vec![claim_status(
+        "pending",
+        "claimed by dead-host at 2026-11-11T06:00:00Z",
+        16 * 60,
+    )]));
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "skipped:already-posted");
+    let log = claim_log(&gh);
+    assert_eq!(log.len(), 2, "{log:?}");
+    // Automerge reads the latest status of the context: it is no longer pending.
+    assert_eq!(log[1].0, "success");
+    assert!(log[1].1.starts_with("released by test-host at "), "{log:?}");
+}
+
+#[tokio::test]
+async fn a_fresh_peer_claim_on_an_already_reviewed_head_is_left_alone() {
+    let (_run, config, db, _dir) = claim_round_setup("claim-fresh-reviewed").await;
+    let gh = mock_github(reviewed_state_with_claims(vec![claim_status(
+        "pending",
+        "claimed by other-host at 2026-11-11T07:00:00Z",
+        60,
+    )]));
+
+    let result = review_round(&config, &db, &gh, 7).await;
+
+    assert_eq!(result.status, "skipped:already-posted");
+    assert_eq!(gh.claims.lock().unwrap().len(), 1, "the peer's claim stays");
+}
+
+async fn release_abandoned_on_s1(gh: &MockGitHub, include_own: bool) {
+    let client = GitHubClient::new_with_base("test-token".into(), &gh.server.url_str("")).unwrap();
+    crate::review::head_claim::release_abandoned(&client, "o", "r", "s1", "test-host", include_own)
+        .await;
+}
+
+#[tokio::test]
+async fn a_start_up_releases_the_pending_claim_that_this_host_left() {
+    let gh = mock_github(state_with_claims(vec![claim_status(
+        "pending",
+        "claimed by test-host at 2026-11-11T07:09:00Z",
+        60,
+    )]));
+
+    release_abandoned_on_s1(&gh, true).await;
+
+    let log = claim_log(&gh);
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[1].0, "success");
+    assert!(log[1].1.starts_with("released by test-host at "), "{log:?}");
+}
+
+#[tokio::test]
+async fn a_start_up_leaves_a_fresh_claim_of_a_peer() {
+    let gh = mock_github(state_with_claims(vec![claim_status(
+        "pending",
+        "claimed by other-host at 2026-11-11T07:09:00Z",
+        60,
+    )]));
+
+    release_abandoned_on_s1(&gh, true).await;
+
+    assert_eq!(claim_log(&gh).len(), 1, "the peer's claim stays");
+}
+
+#[tokio::test]
+async fn a_running_daemon_leaves_its_own_fresh_claim() {
+    let gh = mock_github(state_with_claims(vec![claim_status(
+        "pending",
+        "claimed by test-host at 2026-11-11T07:09:00Z",
+        60,
+    )]));
+
+    release_abandoned_on_s1(&gh, false).await;
+
+    assert_eq!(claim_log(&gh).len(), 1, "a live cycle keeps its claim");
+}
