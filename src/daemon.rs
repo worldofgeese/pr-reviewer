@@ -105,6 +105,7 @@ pub async fn start(
     let mut open_prs: HashMap<String, Vec<PullRequest>> = HashMap::new();
     let mut human_answers_checked: HashMap<(String, u64), Instant> = HashMap::new();
     let mut stale_claims_checked: HashMap<(String, u64), Instant> = HashMap::new();
+    let mut claims_swept_at_start: HashSet<String> = HashSet::new();
     let host = head_claim::local_host();
 
     loop {
@@ -222,35 +223,10 @@ pub async fn start(
                     stale_claims_checked.retain(|(repo, number), _| {
                         repo != &repo_name || open_pr_numbers.contains(number)
                     });
-                    // The first full listing after start: no review cycle of
-                    // this process can hold a claim yet.
-                    let first_listing = !open_prs.contains_key(&repo_name);
                     open_prs.insert(repo_name.clone(), prs.clone());
                     for pr in prs {
                         let state = db.get_pr_state(&repo_name, pr.number as i64).await?;
                         let already = state.as_ref().and_then(|s| s.last_reviewed_sha.clone());
-
-                        // A daemon that died inside a review cycle leaves a
-                        // `pending` head claim that never expires. Release it
-                        // here: an already-reviewed head is never claimed again.
-                        let reviewed = already.as_deref() == Some(pr.head.sha.as_str());
-                        let check_key = (repo_name.clone(), pr.number);
-                        let claim_check_due = reviewed
-                            && stale_claims_checked
-                                .get(&check_key)
-                                .is_none_or(|at| at.elapsed() >= STALE_CLAIM_CHECK_INTERVAL);
-                        if first_listing || claim_check_due {
-                            stale_claims_checked.insert(check_key, Instant::now());
-                            head_claim::release_abandoned(
-                                &github,
-                                &repo_cfg.owner,
-                                &repo_cfg.name,
-                                &pr.head.sha,
-                                &host,
-                                first_listing,
-                            )
-                            .await;
-                        }
                         if already.as_deref() != Some(pr.head.sha.as_str()) {
                             changes_detected |=
                                 enqueue_review_work_item(&db, &repo_name, &pr, standby_delay)
@@ -503,6 +479,42 @@ pub async fn start(
                                 }
                             }
                         });
+                    }
+                }
+            }
+
+            // A daemon that died inside a review cycle leaves a `pending` head
+            // claim that never expires, and an already-reviewed head is never
+            // claimed again. Release it here, from the cached PR list, because
+            // a 304 on the list does not reach the code above. On the first pass
+            // after start no review cycle of this process holds a claim, so a
+            // claim of this host is dead too. Later only claims older than
+            // CLAIM_TTL are, and only on reviewed heads: a head under review
+            // is handled by its own cycle.
+            if !config.defaults.dry_run && open_prs.contains_key(&repo_name) {
+                let after_start = claims_swept_at_start.insert(repo_name.clone());
+                for pr in open_prs.get(&repo_name).into_iter().flatten() {
+                    let key = (repo_name.clone(), pr.number);
+                    let reviewed = db
+                        .get_pr_state(&repo_name, pr.number as i64)
+                        .await?
+                        .and_then(|state| state.last_reviewed_sha)
+                        .is_some_and(|sha| sha == pr.head.sha);
+                    let due = reviewed
+                        && stale_claims_checked
+                            .get(&key)
+                            .is_none_or(|at| at.elapsed() >= STALE_CLAIM_CHECK_INTERVAL);
+                    if after_start || due {
+                        stale_claims_checked.insert(key, Instant::now());
+                        head_claim::release_abandoned(
+                            &github,
+                            &repo_cfg.owner,
+                            &repo_cfg.name,
+                            &pr.head.sha,
+                            &host,
+                            after_start,
+                        )
+                        .await;
                     }
                 }
             }
