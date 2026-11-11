@@ -1211,9 +1211,19 @@ async fn process_work_item(
                     });
                 }
             }
-            engine
+            let result = engine
                 .review_existing_pr(&repo_cfg, &pr_data, ReviewOptions::default())
                 .await?;
+            if result.status == crate::review::head_claim::SKIPPED_CLAIMED_BY_PEER {
+                // Look again later: the peer may finish, fail or let its
+                // claim expire.
+                db.defer_work_item(item.id, PEER_IN_PROGRESS_RECHECK_SECS)
+                    .await?;
+                return Ok(WorkItemOutcome {
+                    deferred: true,
+                    ..WorkItemOutcome::default()
+                });
+            }
             Ok(WorkItemOutcome::default())
         }
         WORK_KIND_RESPOND_TO_COMMAND => {

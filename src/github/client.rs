@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use base64::Engine;
-use reqwest::header::{HeaderMap, ACCEPT, ETAG, IF_NONE_MATCH, LINK, USER_AGENT};
+use reqwest::header::{HeaderMap, ACCEPT, DATE, ETAG, IF_NONE_MATCH, LINK, USER_AGENT};
 use reqwest::{Client, Method};
 
 use crate::github::types::{
-    ContentResponse, CreateIssueCommentRequest, CreatePullRequestRequest,
-    CreatePullRequestResponse, CreateRefRequest, CreateReplyRequest, CreateReviewRequest,
-    GitRefResponse, IssueComment, PrFile, PullRequest, PullRequestReview, ReviewComment,
-    UpdateContentRequest, UpdateIssueCommentRequest,
+    CommitStatus, CommitStatuses, ContentResponse, CreateIssueCommentRequest,
+    CreatePullRequestRequest, CreatePullRequestResponse, CreateRefRequest, CreateReplyRequest,
+    CreateReviewRequest, GitRefResponse, IssueComment, PrFile, PullRequest, PullRequestReview,
+    ReviewComment, UpdateContentRequest, UpdateIssueCommentRequest,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -821,6 +821,54 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// The latest commit status of each context on `sha`, from GitHub's
+    /// combined status, with GitHub's own clock at the time of the read.
+    /// Needs read access to the repository.
+    pub async fn get_commit_statuses(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<CommitStatuses> {
+        #[derive(serde::Deserialize)]
+        struct Combined {
+            statuses: Vec<CommitStatus>,
+        }
+        let mut statuses = Vec::new();
+        let mut server_time = None;
+        let mut page = 1u32;
+        loop {
+            let path =
+                format!("/repos/{owner}/{repo}/commits/{sha}/status?per_page=100&page={page}");
+            let resp = self
+                .request(Method::GET, &path)
+                .send_named()
+                .await
+                .context("GitHub get commit statuses failed")?;
+            self.update_rate_state(resp.headers());
+            if server_time.is_none() {
+                server_time = resp
+                    .headers()
+                    .get(DATE)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| chrono::DateTime::parse_from_rfc2822(v).ok())
+                    .map(|t| t.with_timezone(&chrono::Utc));
+            }
+            let has_next = response_has_next_page(resp.headers());
+            let combined: Combined = handle_json(resp).await?;
+            let batch_empty = combined.statuses.is_empty();
+            statuses.extend(combined.statuses);
+            if !has_next || batch_empty || page >= 10 {
+                break;
+            }
+            page += 1;
+        }
+        Ok(CommitStatuses {
+            statuses,
+            server_time: server_time.unwrap_or_else(chrono::Utc::now),
+        })
+    }
+
     /// `https://api.github.com/graphql`, or `https://HOST/api/graphql` for
     /// GitHub Enterprise Server, whose REST base ends in `/api/v3`.
     fn graphql_url(&self) -> String {
@@ -1268,6 +1316,40 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_commit_statuses_lists_the_latest_status_of_each_context() {
+        use httptest::{matchers::*, responders::*, Expectation, Server};
+        let server = Server::run();
+        server.expect(
+            Expectation::matching(request::method_path(
+                "GET",
+                "/repos/o/r/commits/abc123/status",
+            ))
+            .respond_with(json_encoded(serde_json::json!({
+                "state": "pending",
+                "statuses": [{
+                    "context": "pr-reviewer/claim",
+                    "state": "pending",
+                    "description": "claimed by box at 2026-11-11T07:00:00Z",
+                    "created_at": "2026-11-11T07:00:01Z",
+                }],
+            }))),
+        );
+        let client = GitHubClient::new_with_base("t".into(), &server.url_str("")).unwrap();
+        let read = client
+            .get_commit_statuses("o", "r", "abc123")
+            .await
+            .unwrap();
+        let statuses = read.statuses;
+        assert!((chrono::Utc::now() - read.server_time).num_seconds().abs() < 60);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].context, "pr-reviewer/claim");
+        assert_eq!(
+            statuses[0].description.as_deref(),
+            Some("claimed by box at 2026-11-11T07:00:00Z")
+        );
     }
 
     /// Accepts connections and never answers, like a half-open GitHub.

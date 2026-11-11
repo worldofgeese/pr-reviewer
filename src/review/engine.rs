@@ -18,6 +18,7 @@ use crate::github::types::{
 use crate::github::{client::GitHubClient, pr};
 use crate::harness;
 use crate::harness::spawn::{ensure_harness_available, run_harness, HarnessRunRequest};
+use crate::review::head_claim::{self, HeadClaim};
 use crate::review::instructions::{open_instruction_pr, recurring_finding_fingerprint};
 use crate::review::parser::{
     parse_reply_output, parse_review_output, CommentSeverity, FindingKind, ParseOutcome,
@@ -165,6 +166,8 @@ pub struct ReviewEngine {
     github: GitHubClient,
     db: Database,
     authenticated_user: Option<String>,
+    /// The host name that this daemon puts in its head claims.
+    host: String,
 }
 
 impl ReviewEngine {
@@ -174,7 +177,14 @@ impl ReviewEngine {
             github,
             db,
             authenticated_user: None,
+            host: head_claim::local_host(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_host(mut self, host: &str) -> Self {
+        self.host = host.to_string();
+        self
     }
 
     pub async fn init(&mut self) {
@@ -354,6 +364,7 @@ impl ReviewEngine {
         // Check if we already posted a review for this SHA before posting in-progress comment,
         // to avoid orphaned "started reviewing" comments when the already-posted guard fires.
         let mut in_progress_posted = false;
+        let mut head_claimed = false;
         if !dry_run {
             let reviewer_owner = match &self.authenticated_user {
                 Some(login) => login.clone(),
@@ -374,6 +385,48 @@ impl ReviewEngine {
             });
 
             if !already_posted {
+                // Claim the head before any visible step, so two daemons do
+                // not both comment on it.
+                match head_claim::acquire(
+                    &self.github,
+                    &repo_cfg.owner,
+                    &repo_cfg.name,
+                    &pr_data.head.sha,
+                    &self.host,
+                )
+                .await
+                {
+                    HeadClaim::Held => head_claimed = true,
+                    HeadClaim::Unavailable => {}
+                    HeadClaim::Contested { host } => {
+                        tracing::info!(
+                            repo = %repo_name,
+                            pr = pr_data.number,
+                            sha = %pr_data.head.sha,
+                            peer = %host,
+                            "skipping review: a peer host holds the head claim"
+                        );
+                        // Free the ledger entry so the head can be reviewed
+                        // once the peer's claim ends or expires.
+                        if let Err(err) = self.db.delete_review_claim(&dedupe).await {
+                            tracing::warn!(
+                                dedupe_key = %dedupe,
+                                error = %err,
+                                "could not free the review claim after a peer's head claim; \
+                                 the head is reviewed after the next daemon restart"
+                            );
+                        }
+                        return Ok(ReviewRunResult {
+                            repo: repo_name,
+                            pr_number: pr_data.number,
+                            sha: pr_data.head.sha.clone(),
+                            status: head_claim::SKIPPED_CLAIMED_BY_PEER.to_string(),
+                            verdict: None,
+                            comments_posted: 0,
+                            fingerprint: None,
+                        });
+                    }
+                }
                 let has_prior_bot_review = existing_reviews.iter().any(|r| {
                     login_matches_bot(
                         &r.user.login,
@@ -426,6 +479,17 @@ impl ReviewEngine {
                 in_progress_posted,
             )
             .await;
+
+        if head_claimed {
+            head_claim::release(
+                &self.github,
+                &repo_cfg.owner,
+                &repo_cfg.name,
+                &pr_data.head.sha,
+                &self.host,
+            )
+            .await;
+        }
 
         match outcome {
             Ok(mut result) => {

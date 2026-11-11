@@ -93,6 +93,23 @@ pub struct PullRequestReview {
     pub submitted_at: Option<String>,
 }
 
+/// One commit status as GitHub reports it for a commit.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommitStatus {
+    pub context: String,
+    pub state: String,
+    pub description: Option<String>,
+    pub created_at: String,
+}
+
+/// The latest status of each context on a commit, read at `server_time` by
+/// GitHub's clock.
+#[derive(Debug, Clone)]
+pub struct CommitStatuses {
+    pub statuses: Vec<CommitStatus>,
+    pub server_time: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewComment {
     pub id: u64,
