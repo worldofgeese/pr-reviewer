@@ -30,6 +30,11 @@
 
         cargoLock.lockFile = ./Cargo.lock;
 
+        # nixpkgs' cargo setup hook sets LIBSQLITE3_SYS_USE_PKG_CONFIG=1, which
+        # overrides rusqlite's `bundled` feature, so link nixpkgs' sqlite.
+        nativeBuildInputs = [pkgs.pkg-config];
+        buildInputs = [pkgs.sqlite];
+
         # The suite binds loopback sockets, which the Nix sandbox refuses, and
         # it shells out to git. CI runs it instead.
         doCheck = false;
