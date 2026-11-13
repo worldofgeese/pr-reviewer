@@ -953,6 +953,24 @@ async fn a_reply_without_review_json_fails_the_review_and_posts_nothing() {
         gh.posted_reviews.lock().unwrap().is_empty(),
         "the reply is not posted as a review"
     );
+    let bodies = comment_bodies(&gh);
+    assert_eq!(bodies.len(), 1, "one comment, updated in place: {bodies:?}");
+    assert!(
+        !bodies[0].contains("will follow up"),
+        "no promise of a review that never comes: {}",
+        bodies[0]
+    );
+    assert!(
+        bodies[0].contains("<!-- pr-reviewer-status:failed pr=7 sha=s1 -->")
+            && bodies[0].contains("`@pr-reviewer retry`"),
+        "the comment says the review failed and how to run it again: {}",
+        bodies[0]
+    );
+    assert!(
+        !bodies[0].contains("invoke"),
+        "the reply stays off GitHub: {}",
+        bodies[0]
+    );
 }
 
 #[tokio::test]

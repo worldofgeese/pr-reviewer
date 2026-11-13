@@ -54,7 +54,7 @@ Before a daemon reviews a head commit, it reads the reviews and comments of the 
 - posted a review of that head commit that carries the pr-reviewer metadata, or
 - recorded in its status comment that it reviewed or skipped that head commit, for example as docs-only.
 
-When a peer's status comment says that the peer is reviewing that head commit, the daemon checks again after 2 minutes. A status comment older than `harness.timeout_secs` does not count, because the peer stopped before it finished.
+When a peer's status comment says that the peer is reviewing that head commit, the daemon checks again after 2 minutes. A status comment older than `harness.timeout_secs` does not count, because the peer stopped before it finished. A status comment that says the peer's review failed does not count either, so the daemon reviews that head commit.
 
 For commands such as `@pr-reviewer status` and `@pr-reviewer fix`, the daemon skips a command that a peer already answered. For `@pr-reviewer fix`, it still runs the repair when the peer that answered has auto-fix off. It does not reply in a review thread that a peer started, because the peer answers there.
 

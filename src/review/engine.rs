@@ -540,30 +540,29 @@ impl ReviewEngine {
         }
     }
 
-    /// A review that is skipped after the in-progress comment went up must not
-    /// leave "will follow up shortly" behind: rewrite that comment to say the
-    /// review was skipped and why. Only a comment posted by this run is
+    /// A review that is skipped or fails after the in-progress comment went up
+    /// must not leave "will follow up shortly" behind: rewrite that comment to
+    /// `body`, which says what happened. Only a comment posted by this run is
     /// rewritten; an earlier durable comment holds a real review.
     async fn retract_in_progress_comment(
         &self,
         repo_cfg: &RepoConfig,
         pr_data: &PullRequest,
-        skip_reason: &str,
+        body: &str,
         in_progress_posted: bool,
     ) {
         if !in_progress_posted {
             return;
         }
-        let body = build_durable_skipped_comment(pr_data, skip_reason);
         if let Err(err) = self
-            .sync_durable_review_comment(repo_cfg, pr_data, &body, false)
+            .sync_durable_review_comment(repo_cfg, pr_data, body, false)
             .await
         {
             tracing::warn!(
                 repo = %repo_cfg.full_name(),
                 pr = pr_data.number,
                 error = %err,
-                "failed to update the in-progress comment of a skipped review"
+                "failed to update the in-progress comment of a review that posted nothing"
             );
         }
     }
@@ -765,7 +764,7 @@ impl ReviewEngine {
             self.retract_in_progress_comment(
                 repo_cfg,
                 pr_data,
-                "unchanged-diff",
+                &build_durable_skipped_comment(pr_data, "unchanged-diff"),
                 in_progress_posted,
             )
             .await;
@@ -801,8 +800,13 @@ impl ReviewEngine {
                 reason = skip_reason,
                 "skipping review: {skip_reason}",
             );
-            self.retract_in_progress_comment(repo_cfg, pr_data, skip_reason, in_progress_posted)
-                .await;
+            self.retract_in_progress_comment(
+                repo_cfg,
+                pr_data,
+                &build_durable_skipped_comment(pr_data, skip_reason),
+                in_progress_posted,
+            )
+            .await;
             self.db
                 .complete_review(
                     &dedupe,
@@ -1338,6 +1342,19 @@ impl ReviewEngine {
             ParseOutcome::RawSummary(raw) => {
                 // Never post a reply that is not a review: on GitHub it would
                 // count as a review of the head. Fail, as for empty output.
+                tracing::debug!(
+                    repo = %repo_name,
+                    pr = pr_data.number,
+                    reply = %raw,
+                    "harness reply holds no valid pr-review-json review"
+                );
+                self.retract_in_progress_comment(
+                    repo_cfg,
+                    pr_data,
+                    &build_durable_failed_comment(pr_data),
+                    in_progress_posted,
+                )
+                .await;
                 let start: String = raw
                     .split_whitespace()
                     .collect::<Vec<_>>()
@@ -1350,6 +1367,13 @@ impl ReviewEngine {
                 ));
             }
             ParseOutcome::Empty => {
+                self.retract_in_progress_comment(
+                    repo_cfg,
+                    pr_data,
+                    &build_durable_failed_comment(pr_data),
+                    in_progress_posted,
+                )
+                .await;
                 return Err(anyhow!("harness returned empty output"));
             }
         }
@@ -4569,6 +4593,22 @@ fn build_durable_skipped_comment(pr_data: &PullRequest, skip_reason: &str) -> St
     let body = format!(
         "{}\n<!-- pr-reviewer-status:skipped pr={} sha={} reason={skip_reason} -->\n\n\
          I skipped the review of commit `{}` (`{skip_reason}`): {explanation}.\n\n\
+         _This comment is updated in place by pr-reviewer._",
+        durable_review_marker(pr_data.number),
+        pr_data.number,
+        pr_data.head.sha,
+        pr_data.head.sha,
+    );
+    truncate_github_comment_body(&body)
+}
+
+/// The status comment of a review whose harness gave no review. It names no
+/// cause: the reply can hold local paths or error text.
+fn build_durable_failed_comment(pr_data: &PullRequest) -> String {
+    let body = format!(
+        "{}\n<!-- pr-reviewer-status:failed pr={} sha={} -->\n\n\
+         The review of commit `{}` failed: the AI tool gave no review. \
+         A push starts a new review, and a maintainer can run this one again with `@pr-reviewer retry`.\n\n\
          _This comment is updated in place by pr-reviewer._",
         durable_review_marker(pr_data.number),
         pr_data.number,

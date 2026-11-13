@@ -174,7 +174,13 @@ name = "large-repo"
 
 ### "harness reply holds no valid pr-review-json review"
 
-The harness answered, but its reply holds no review that pr-reviewer can read. pr-reviewer never posts such a reply, so the review fails and nothing goes to GitHub. `pr-reviewer logs --repo owner/repo` shows the review as `failed`, and the error quotes the start of the reply. When you have fixed the cause, push a commit or comment `@pr-reviewer retry` on the pull request.
+The harness answered, but its reply holds no review that pr-reviewer can read. pr-reviewer never posts such a reply, so the review fails. Its status comment on the pull request says that the review failed, without the reply. `pr-reviewer logs --repo owner/repo` shows the review as `failed`, and the error quotes the start of the reply. When you have fixed the cause, push a commit or comment `@pr-reviewer retry` on the pull request.
+
+To see the whole reply, run the review with debug logs and look for `harness reply holds no valid pr-review-json review`:
+
+```bash
+RUST_LOG=pr_reviewer=debug pr-reviewer review owner/repo#42 --dry-run 2>&1 | less
+```
 
 Common causes:
 
