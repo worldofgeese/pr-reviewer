@@ -1176,7 +1176,7 @@ impl ReviewEngine {
         let parse_outcome = parse_review_output(&harness_output.stdout, &harness_output.stderr)?;
 
         let mut body = String::new();
-        let mut verdict = ReviewVerdict::Comment;
+        let mut verdict: ReviewVerdict;
         let mut inline_comments: Vec<CreateReviewComment> = Vec::new();
         let mut unmapped_comments: Vec<String> = Vec::new();
         let mut pending_findings: Vec<PendingFinding> = Vec::new();
@@ -1334,14 +1334,18 @@ impl ReviewEngine {
                     || !follow_up_notes.is_empty();
             }
             ParseOutcome::RawSummary(raw) => {
-                if looks_like_harness_transport_output(&raw) {
-                    return Err(anyhow!(
-                        "harness returned machine transport output instead of a review body"
-                    ));
-                }
-                has_structured_findings = true;
-                body.push_str("Harness output could not be parsed as structured JSON.\n\n");
-                body.push_str(&raw);
+                // Never post a reply that is not a review: on GitHub it would
+                // count as a review of the head. Fail, as for empty output.
+                let start: String = raw
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(200)
+                    .collect();
+                return Err(anyhow!(
+                    "harness reply holds no valid pr-review-json review; it starts: {start}"
+                ));
             }
             ParseOutcome::Empty => {
                 return Err(anyhow!("harness returned empty output"));
@@ -4232,16 +4236,6 @@ fn looks_like_harness_error_output(text: &str) -> bool {
         || lower.contains("command not found")
 }
 
-fn looks_like_harness_transport_output(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed.contains("{\"type\":\"thread.started\"")
-        || trimmed.contains("{\"type\":\"turn.started\"")
-        || (trimmed.contains("\"type\":\"command_execution\"")
-            && trimmed.contains("\"item.started\""))
-        || trimmed.contains("Unable to open session log file")
-        || (trimmed.contains("codex: line") && trimmed.contains("unbound variable"))
-}
-
 fn truncate_utf8_to_max_bytes(input: &mut String, max_bytes: usize) {
     if input.len() <= max_bytes {
         return;
@@ -4732,11 +4726,10 @@ mod tests {
         build_review_metadata_block, build_thread_history, command_response_marker,
         durable_review_marker, extract_in_progress_comment, find_durable_review_comment,
         finding_key, infer_pr_focus, line_is_authored_by_bot, login_matches_bot,
-        looks_like_harness_error_output, looks_like_harness_transport_output,
-        looks_like_reintroduction, normalize_in_progress_comment, normalize_summary_output,
-        pr_reviewer_project_url, reconcile_finding_ledger, resolve_project_url,
-        should_suppress_finding, truncate_github_comment_body, FindingStatus, PendingFinding,
-        ReviewMemory, GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
+        looks_like_harness_error_output, looks_like_reintroduction, normalize_in_progress_comment,
+        normalize_summary_output, pr_reviewer_project_url, reconcile_finding_ledger,
+        resolve_project_url, should_suppress_finding, truncate_github_comment_body, FindingStatus,
+        PendingFinding, ReviewMemory, GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
     };
 
     fn test_user(login: &str) -> User {
@@ -5271,16 +5264,6 @@ Reviewed the archive flow.
     fn harness_error_output_is_rejected() {
         assert!(looks_like_harness_error_output(
             "Error: command returned exit status 1"
-        ));
-    }
-
-    #[test]
-    fn harness_transport_output_is_rejected() {
-        assert!(looks_like_harness_transport_output(
-            "{\"type\":\"thread.started\",\"thread_id\":\"abc\"}\n{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}"
-        ));
-        assert!(looks_like_harness_transport_output(
-            "/home/nicholai/.config/signet/bin/codex: line 6: HOME: unbound variable"
         ));
     }
 

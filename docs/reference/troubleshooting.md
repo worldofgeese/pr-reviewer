@@ -172,23 +172,18 @@ name = "large-repo"
 # the timeout is global only: use harness.timeout_secs
 ```
 
-### "failed to parse harness output" or review posted with no comments
+### "harness reply holds no valid pr-review-json review"
 
-The parser extracts JSON from the harness output using three strategies: marked code block → brace-match fallback → raw fallback. Parse failures usually mean the model returned malformed output.
+The harness answered, but its reply holds no review that pr-reviewer can read. pr-reviewer never posts such a reply, so the review fails and nothing goes to GitHub. `pr-reviewer logs --repo owner/repo` shows the review as `failed`, and the error quotes the start of the reply. When you have fixed the cause, push a commit or comment `@pr-reviewer retry` on the pull request.
 
-Debug by running a dry-run and inspecting the raw output:
+Common causes:
 
-```bash
-RUST_LOG=debug pr-reviewer review owner/repo#42 --dry-run 2>&1 | less
-```
+- **The reply is tool calls written as text**, such as `<invoke name="Grep">`. The repository's `custom_instructions` ask the review to read files or to load skills, and the session has no tool for that. List the tools that the instructions need in `review_tools`, or remove the instruction. See [Review session tools](configuration.md#review-session-tools).
+- **The reply is an error of the AI tool**, such as `API Error: Connection refused` or `Failed to authenticate`. Make sure that the tool works for the user that runs the daemon.
+- **The JSON is malformed or misses a field.** The model made a mistake. Retry the review.
+- **The model stopped in the middle of the JSON**, at a context limit or a timeout.
 
-Look for `raw harness output` in the debug log. Common causes:
-
-- Model hit a context limit and truncated mid-JSON
-- Model added a preamble before the JSON block (the brace-match fallback handles this, but deeply nested truncation can still fail)
-- `max_prompt_bytes` set too high, causing the model to time out before completing
-
-Reduce context if needed:
+To reduce the context:
 
 ```bash
 pr-reviewer config set defaults.max_diff_lines 1500

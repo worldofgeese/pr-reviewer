@@ -88,6 +88,11 @@ impl Run {
         .unwrap();
     }
 
+    /// Answer review prompt N with `text` as it is, not as a review block.
+    fn respond_raw(&self, n: usize, text: &str) {
+        std::fs::write(self.dir.join(format!("response-{n}.md")), text).unwrap();
+    }
+
     fn prompt(&self, n: usize) -> String {
         std::fs::read_to_string(self.dir.join(format!("prompt-{n}.md"))).unwrap()
     }
@@ -916,6 +921,38 @@ async fn an_unknown_review_history_fails_the_review_instead_of_restarting_the_co
     );
     assert_eq!(run.reviews_run(), 0, "the harness did not run");
     assert!(gh.posted_reviews.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_reply_without_review_json_fails_the_review_and_posts_nothing() {
+    let run = Run::new("tool-call-reply");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    // A session without tools that tries to use one writes the call as text
+    // and stops.
+    run.respond_raw(
+        1,
+        "I'll check the claims against the checked-out repository first.\n\n\n\
+         <invoke name=\"Grep\">\n<parameter name=\"pattern\">fetch_all</parameter>\n</invoke>\n",
+    );
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+
+    let err = try_review_round(&config, &db, &gh, 7).await.unwrap_err();
+    let err = format!("{err:#}");
+    assert!(err.contains("no valid pr-review-json review"), "{err}");
+    assert!(
+        err.contains("I'll check the claims against the checked-out repository first."),
+        "the error quotes the start of the reply: {err}"
+    );
+    assert_eq!(run.reviews_run(), 1);
+    assert!(
+        gh.posted_reviews.lock().unwrap().is_empty(),
+        "the reply is not posted as a review"
+    );
 }
 
 #[tokio::test]
