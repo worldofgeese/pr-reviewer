@@ -956,6 +956,55 @@ async fn a_reply_without_review_json_fails_the_review_and_posts_nothing() {
 }
 
 #[tokio::test]
+async fn the_review_prompt_names_the_tools_of_the_session() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+
+    // The default: no tools, and the prompt says so.
+    let run = Run::new("session-without-tools");
+    let default_tools = config(&run);
+    run.respond(1, review_json("comment", json!([])));
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+    assert_eq!(
+        review_round(&default_tools, &db, &gh, 7).await.status,
+        "completed"
+    );
+    let prompt = run.prompt(1);
+    assert!(
+        prompt.contains("## Session Tools\nThis review session has no tools."),
+        "{prompt}"
+    );
+
+    // A repository that allows tools gets them named.
+    let run = Run::new("session-with-tools");
+    let mut app = (*config(&run)).clone();
+    app.repos[0].review_tools = Some(vec!["Read".to_string(), "Grep".to_string()]);
+    let some_tools = Arc::new(app);
+    run.respond(1, review_json("comment", json!([])));
+    let gh = mock_github(GitHubState::new(
+        pr_json(8, "t1", "feat/other", "main"),
+        simple_diff("retry();"),
+    ));
+    assert_eq!(
+        review_round(&some_tools, &db, &gh, 8).await.status,
+        "completed"
+    );
+    let prompt = run.prompt(1);
+    assert!(
+        prompt.contains("This review session can use only these tools: Read, Grep."),
+        "{prompt}"
+    );
+    assert!(
+        run.args(1).contains("|--tools|Read,Grep|"),
+        "{}",
+        run.args(1)
+    );
+}
+
+#[tokio::test]
 async fn past_the_limit_notes_do_not_block_and_off_diff_critical_findings_stay_visible() {
     let run = Run::new("notes-only");
     let config = config(&run);

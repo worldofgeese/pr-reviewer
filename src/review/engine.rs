@@ -1127,6 +1127,8 @@ impl ReviewEngine {
             .as_ref()
             .map(|info| build_stack_context(pr_data, info, &ancestor_findings));
 
+        let harness_impl = harness::for_kind(harness_kind);
+        let tools = repo_cfg.resolved_review_tools(&self.config);
         let prompt = build_review_prompt(
             repo_cfg,
             pr_data,
@@ -1138,6 +1140,7 @@ impl ReviewEngine {
             round,
             &policy,
             stack_context.as_deref(),
+            harness_impl.limits_tools().then_some(tools.as_slice()),
         );
 
         tracing::info!(
@@ -1159,7 +1162,6 @@ impl ReviewEngine {
             .await
             .context("failed to write prompt file")?;
 
-        let harness_impl = harness::for_kind(harness_kind);
         let harness_output = run_harness(
             harness_impl.as_ref(),
             HarnessRunRequest {
@@ -1168,7 +1170,7 @@ impl ReviewEngine {
                 reasoning_effort,
                 working_dir: temp.path().to_path_buf(),
                 timeout_secs: self.config.harness.timeout_secs,
-                tools: repo_cfg.resolved_review_tools(&self.config),
+                tools,
             },
         )
         .await?;

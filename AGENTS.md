@@ -63,6 +63,7 @@ All harnesses run in a sandboxed environment:
 - Stripped env vars: `HOME`, `SSH_AUTH_SOCK`, `GH_TOKEN`, `AWS_*`, `ANTHROPIC_API_KEY`, `CLAUDECODE`
 - `kill_on_drop(true)` on child process to prevent orphans on timeout
 - claude-code uses stdin piping (`-p -`) because prompts exceed Linux `MAX_ARG_STRLEN` (~128KB)
+- When the harness limits tools (`Harness::limits_tools`, claude-code only), the review prompt names them, or says there are none. Without that, instructions that need a tool make the model write the tool call as text and stop
 
 ### Token Resolution (token/mod.rs)
 

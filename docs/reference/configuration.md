@@ -58,6 +58,8 @@ To let review sessions read files, list the file-reading tools:
 review_tools = ["Read", "Grep", "Glob"]
 ```
 
+The review prompt names the tools of the session, or says that it has none, so the model does not write calls to tools that it lacks. If the `custom_instructions` of a repository ask the review to read files or to load skills, list the tools that this needs. Otherwise the review does without them and says what it could not check.
+
 **These tools are not read-only in effect.** They are not confined to the session's directory. They can read any file that the user running pr-reviewer can read, including the keyfile and `config.toml` in the config directory. A prompt-injected diff could get such content into a public review comment. Enable them only for repositories whose authors you trust. Add `Bash`, `Edit`, `Write` or `WebFetch` only for a repository that you trust fully.
 
 pr-reviewer also starts every `claude-code` session with `--strict-mcp-config`, so the MCP servers of your Claude Code configuration are not available. `review_tools` lists built-in tools only. The hooks of your Claude Code configuration still run.
