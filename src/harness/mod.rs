@@ -24,6 +24,11 @@ pub trait Harness: Send + Sync {
     fn uses_stdin(&self) -> bool {
         false
     }
+    /// Whether the session can use only the `tools` given to `build_command`.
+    /// A harness that ignores them keeps its own tools.
+    fn limits_tools(&self) -> bool {
+        false
+    }
 }
 
 pub fn for_kind(kind: HarnessKind) -> Box<dyn Harness> {

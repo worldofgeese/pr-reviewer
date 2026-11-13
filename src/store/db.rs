@@ -1237,11 +1237,7 @@ impl Database {
                 )
                 .optional()?
                 .unwrap_or(0);
-            if total_for_head >= i64::from(max_repairs_per_head) {
-                return Ok(false);
-            }
-
-            Ok(true)
+            Ok(total_for_head < i64::from(max_repairs_per_head))
         })
         .await
     }

@@ -88,6 +88,11 @@ impl Run {
         .unwrap();
     }
 
+    /// Answer review prompt N with `text` as it is, not as a review block.
+    fn respond_raw(&self, n: usize, text: &str) {
+        std::fs::write(self.dir.join(format!("response-{n}.md")), text).unwrap();
+    }
+
     fn prompt(&self, n: usize) -> String {
         std::fs::read_to_string(self.dir.join(format!("prompt-{n}.md"))).unwrap()
     }
@@ -916,6 +921,105 @@ async fn an_unknown_review_history_fails_the_review_instead_of_restarting_the_co
     );
     assert_eq!(run.reviews_run(), 0, "the harness did not run");
     assert!(gh.posted_reviews.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_reply_without_review_json_fails_the_review_and_posts_nothing() {
+    let run = Run::new("tool-call-reply");
+    let config = config(&run);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    // A session without tools that tries to use one writes the call as text
+    // and stops.
+    run.respond_raw(
+        1,
+        "I'll check the claims against the checked-out repository first.\n\n\n\
+         <invoke name=\"Grep\">\n<parameter name=\"pattern\">fetch_all</parameter>\n</invoke>\n",
+    );
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+
+    let err = try_review_round(&config, &db, &gh, 7).await.unwrap_err();
+    let err = format!("{err:#}");
+    assert!(err.contains("no valid pr-review-json review"), "{err}");
+    assert!(
+        err.contains("I'll check the claims against the checked-out repository first."),
+        "the error quotes the start of the reply: {err}"
+    );
+    assert_eq!(run.reviews_run(), 1);
+    assert!(
+        gh.posted_reviews.lock().unwrap().is_empty(),
+        "the reply is not posted as a review"
+    );
+    let bodies = comment_bodies(&gh);
+    assert_eq!(bodies.len(), 1, "one comment, updated in place: {bodies:?}");
+    assert!(
+        !bodies[0].contains("will follow up"),
+        "no promise of a review that never comes: {}",
+        bodies[0]
+    );
+    assert!(
+        bodies[0].contains("<!-- pr-reviewer-status:failed pr=7 sha=s1 -->")
+            && bodies[0].contains("`@pr-reviewer retry`"),
+        "the comment says the review failed and how to run it again: {}",
+        bodies[0]
+    );
+    assert!(
+        !bodies[0].contains("invoke"),
+        "the reply stays off GitHub: {}",
+        bodies[0]
+    );
+}
+
+#[tokio::test]
+async fn the_review_prompt_names_the_tools_of_the_session() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+
+    // The default: no tools, and the prompt says so.
+    let run = Run::new("session-without-tools");
+    let default_tools = config(&run);
+    run.respond(1, review_json("comment", json!([])));
+    let gh = mock_github(GitHubState::new(
+        pr_json(7, "s1", "feat/fetch", "main"),
+        simple_diff("retry();"),
+    ));
+    assert_eq!(
+        review_round(&default_tools, &db, &gh, 7).await.status,
+        "completed"
+    );
+    let prompt = run.prompt(1);
+    assert!(
+        prompt.contains("## Session Tools\nThis review session has no tools."),
+        "{prompt}"
+    );
+
+    // A repository that allows tools gets them named.
+    let run = Run::new("session-with-tools");
+    let mut app = (*config(&run)).clone();
+    app.repos[0].review_tools = Some(vec!["Read".to_string(), "Grep".to_string()]);
+    let some_tools = Arc::new(app);
+    run.respond(1, review_json("comment", json!([])));
+    let gh = mock_github(GitHubState::new(
+        pr_json(8, "t1", "feat/other", "main"),
+        simple_diff("retry();"),
+    ));
+    assert_eq!(
+        review_round(&some_tools, &db, &gh, 8).await.status,
+        "completed"
+    );
+    let prompt = run.prompt(1);
+    assert!(
+        prompt.contains("This review session can use only these tools: Read, Grep."),
+        "{prompt}"
+    );
+    assert!(
+        run.args(1).contains("|--tools|Read,Grep|"),
+        "{}",
+        run.args(1)
+    );
 }
 
 #[tokio::test]

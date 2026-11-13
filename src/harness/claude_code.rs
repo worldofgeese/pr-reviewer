@@ -42,6 +42,10 @@ impl Harness for ClaudeCodeHarness {
     fn uses_stdin(&self) -> bool {
         true
     }
+
+    fn limits_tools(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

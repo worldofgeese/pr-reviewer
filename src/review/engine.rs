@@ -540,30 +540,29 @@ impl ReviewEngine {
         }
     }
 
-    /// A review that is skipped after the in-progress comment went up must not
-    /// leave "will follow up shortly" behind: rewrite that comment to say the
-    /// review was skipped and why. Only a comment posted by this run is
+    /// A review that is skipped or fails after the in-progress comment went up
+    /// must not leave "will follow up shortly" behind: rewrite that comment to
+    /// `body`, which says what happened. Only a comment posted by this run is
     /// rewritten; an earlier durable comment holds a real review.
     async fn retract_in_progress_comment(
         &self,
         repo_cfg: &RepoConfig,
         pr_data: &PullRequest,
-        skip_reason: &str,
+        body: &str,
         in_progress_posted: bool,
     ) {
         if !in_progress_posted {
             return;
         }
-        let body = build_durable_skipped_comment(pr_data, skip_reason);
         if let Err(err) = self
-            .sync_durable_review_comment(repo_cfg, pr_data, &body, false)
+            .sync_durable_review_comment(repo_cfg, pr_data, body, false)
             .await
         {
             tracing::warn!(
                 repo = %repo_cfg.full_name(),
                 pr = pr_data.number,
                 error = %err,
-                "failed to update the in-progress comment of a skipped review"
+                "failed to update the in-progress comment of a review that posted nothing"
             );
         }
     }
@@ -765,7 +764,7 @@ impl ReviewEngine {
             self.retract_in_progress_comment(
                 repo_cfg,
                 pr_data,
-                "unchanged-diff",
+                &build_durable_skipped_comment(pr_data, "unchanged-diff"),
                 in_progress_posted,
             )
             .await;
@@ -801,8 +800,13 @@ impl ReviewEngine {
                 reason = skip_reason,
                 "skipping review: {skip_reason}",
             );
-            self.retract_in_progress_comment(repo_cfg, pr_data, skip_reason, in_progress_posted)
-                .await;
+            self.retract_in_progress_comment(
+                repo_cfg,
+                pr_data,
+                &build_durable_skipped_comment(pr_data, skip_reason),
+                in_progress_posted,
+            )
+            .await;
             self.db
                 .complete_review(
                     &dedupe,
@@ -1127,6 +1131,8 @@ impl ReviewEngine {
             .as_ref()
             .map(|info| build_stack_context(pr_data, info, &ancestor_findings));
 
+        let harness_impl = harness::for_kind(harness_kind);
+        let tools = repo_cfg.resolved_review_tools(&self.config);
         let prompt = build_review_prompt(
             repo_cfg,
             pr_data,
@@ -1138,6 +1144,7 @@ impl ReviewEngine {
             round,
             &policy,
             stack_context.as_deref(),
+            harness_impl.limits_tools().then_some(tools.as_slice()),
         );
 
         tracing::info!(
@@ -1159,7 +1166,6 @@ impl ReviewEngine {
             .await
             .context("failed to write prompt file")?;
 
-        let harness_impl = harness::for_kind(harness_kind);
         let harness_output = run_harness(
             harness_impl.as_ref(),
             HarnessRunRequest {
@@ -1168,7 +1174,7 @@ impl ReviewEngine {
                 reasoning_effort,
                 working_dir: temp.path().to_path_buf(),
                 timeout_secs: self.config.harness.timeout_secs,
-                tools: repo_cfg.resolved_review_tools(&self.config),
+                tools,
             },
         )
         .await?;
@@ -1176,7 +1182,7 @@ impl ReviewEngine {
         let parse_outcome = parse_review_output(&harness_output.stdout, &harness_output.stderr)?;
 
         let mut body = String::new();
-        let mut verdict = ReviewVerdict::Comment;
+        let mut verdict: ReviewVerdict;
         let mut inline_comments: Vec<CreateReviewComment> = Vec::new();
         let mut unmapped_comments: Vec<String> = Vec::new();
         let mut pending_findings: Vec<PendingFinding> = Vec::new();
@@ -1334,16 +1340,40 @@ impl ReviewEngine {
                     || !follow_up_notes.is_empty();
             }
             ParseOutcome::RawSummary(raw) => {
-                if looks_like_harness_transport_output(&raw) {
-                    return Err(anyhow!(
-                        "harness returned machine transport output instead of a review body"
-                    ));
-                }
-                has_structured_findings = true;
-                body.push_str("Harness output could not be parsed as structured JSON.\n\n");
-                body.push_str(&raw);
+                // Never post a reply that is not a review: on GitHub it would
+                // count as a review of the head. Fail, as for empty output.
+                tracing::debug!(
+                    repo = %repo_name,
+                    pr = pr_data.number,
+                    reply = %raw,
+                    "harness reply holds no valid pr-review-json review"
+                );
+                self.retract_in_progress_comment(
+                    repo_cfg,
+                    pr_data,
+                    &build_durable_failed_comment(pr_data),
+                    in_progress_posted,
+                )
+                .await;
+                let start: String = raw
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(200)
+                    .collect();
+                return Err(anyhow!(
+                    "harness reply holds no valid pr-review-json review; it starts: {start}"
+                ));
             }
             ParseOutcome::Empty => {
+                self.retract_in_progress_comment(
+                    repo_cfg,
+                    pr_data,
+                    &build_durable_failed_comment(pr_data),
+                    in_progress_posted,
+                )
+                .await;
                 return Err(anyhow!("harness returned empty output"));
             }
         }
@@ -4232,16 +4262,6 @@ fn looks_like_harness_error_output(text: &str) -> bool {
         || lower.contains("command not found")
 }
 
-fn looks_like_harness_transport_output(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed.contains("{\"type\":\"thread.started\"")
-        || trimmed.contains("{\"type\":\"turn.started\"")
-        || (trimmed.contains("\"type\":\"command_execution\"")
-            && trimmed.contains("\"item.started\""))
-        || trimmed.contains("Unable to open session log file")
-        || (trimmed.contains("codex: line") && trimmed.contains("unbound variable"))
-}
-
 fn truncate_utf8_to_max_bytes(input: &mut String, max_bytes: usize) {
     if input.len() <= max_bytes {
         return;
@@ -4582,6 +4602,22 @@ fn build_durable_skipped_comment(pr_data: &PullRequest, skip_reason: &str) -> St
     truncate_github_comment_body(&body)
 }
 
+/// The status comment of a review whose harness gave no review. It names no
+/// cause: the reply can hold local paths or error text.
+fn build_durable_failed_comment(pr_data: &PullRequest) -> String {
+    let body = format!(
+        "{}\n<!-- pr-reviewer-status:failed pr={} sha={} -->\n\n\
+         The review of commit `{}` failed: the AI tool gave no review. \
+         A push starts a new review, and a maintainer can run this one again with `@pr-reviewer retry`.\n\n\
+         _This comment is updated in place by pr-reviewer._",
+        durable_review_marker(pr_data.number),
+        pr_data.number,
+        pr_data.head.sha,
+        pr_data.head.sha,
+    );
+    truncate_github_comment_body(&body)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_durable_review_comment(
     pr_data: &PullRequest,
@@ -4732,11 +4768,10 @@ mod tests {
         build_review_metadata_block, build_thread_history, command_response_marker,
         durable_review_marker, extract_in_progress_comment, find_durable_review_comment,
         finding_key, infer_pr_focus, line_is_authored_by_bot, login_matches_bot,
-        looks_like_harness_error_output, looks_like_harness_transport_output,
-        looks_like_reintroduction, normalize_in_progress_comment, normalize_summary_output,
-        pr_reviewer_project_url, reconcile_finding_ledger, resolve_project_url,
-        should_suppress_finding, truncate_github_comment_body, FindingStatus, PendingFinding,
-        ReviewMemory, GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
+        looks_like_harness_error_output, looks_like_reintroduction, normalize_in_progress_comment,
+        normalize_summary_output, pr_reviewer_project_url, reconcile_finding_ledger,
+        resolve_project_url, should_suppress_finding, truncate_github_comment_body, FindingStatus,
+        PendingFinding, ReviewMemory, GITHUB_COMMENT_MAX_CHARS, GITHUB_COMMENT_TRUNCATION_NOTE,
     };
 
     fn test_user(login: &str) -> User {
@@ -5271,16 +5306,6 @@ Reviewed the archive flow.
     fn harness_error_output_is_rejected() {
         assert!(looks_like_harness_error_output(
             "Error: command returned exit status 1"
-        ));
-    }
-
-    #[test]
-    fn harness_transport_output_is_rejected() {
-        assert!(looks_like_harness_transport_output(
-            "{\"type\":\"thread.started\",\"thread_id\":\"abc\"}\n{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\"}}"
-        ));
-        assert!(looks_like_harness_transport_output(
-            "/home/nicholai/.config/signet/bin/codex: line 6: HOME: unbound variable"
         ));
     }
 

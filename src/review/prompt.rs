@@ -2,6 +2,8 @@ use crate::config::{RepoConfig, ReviewPolicy};
 use crate::github::types::PullRequest;
 use crate::review::policy::{ReviewRound, RoundMode};
 
+/// `session_tools` is the tool set of a harness that limits it (claude-code),
+/// and `None` for a harness that keeps its own tools.
 #[allow(clippy::too_many_arguments)]
 pub fn build_review_prompt(
     repo_cfg: &RepoConfig,
@@ -14,6 +16,7 @@ pub fn build_review_prompt(
     round: ReviewRound,
     policy: &ReviewPolicy,
     stack_context: Option<&str>,
+    session_tools: Option<&[String]>,
 ) -> String {
     let mut prompt = String::new();
 
@@ -154,6 +157,20 @@ pub fn build_review_prompt(
         }
     }
 
+    // Without this, an instruction that needs a tool the session lacks (read
+    // the checkout, load a skill) makes the model write the tool call as text
+    // and stop, with no review.
+    match session_tools {
+        Some([]) => prompt.push_str(
+            "\n## Session Tools\nThis review session has no tools. You cannot read files, search the repository, run commands, fetch URLs or load skills, and a tool call that you write is not run. Base the review only on this prompt. When an instruction above asks for something that needs a tool, do without it and say what you could not check in the confidence justification. Reply with the `pr-review-json` block.\n",
+        ),
+        Some(tools) => prompt.push_str(&format!(
+            "\n## Session Tools\nThis review session can use only these tools: {}. A call to any other tool is not run. When you are done, reply with the `pr-review-json` block.\n",
+            tools.join(", ")
+        )),
+        None => {}
+    }
+
     prompt.push_str("\n## Context\n");
     prompt.push_str(context);
 
@@ -266,6 +283,7 @@ mod tests {
             ReviewRound::after_prior_reviews(0, 2),
             &ReviewPolicy::default(),
             None,
+            None,
         );
 
         assert!(prompt.contains("persistent repository maintainer agent"));
@@ -292,6 +310,7 @@ mod tests {
             ReviewRound::after_prior_reviews(prior_reviews, limit),
             &ReviewPolicy::default(),
             stack,
+            None,
         )
     }
 
@@ -336,5 +355,10 @@ mod tests {
             "stack section comes before the truncatable context"
         );
         assert!(!prompt_for(0, 2, Some("  ")).contains("## Stacked PR"));
+    }
+
+    #[test]
+    fn a_harness_that_keeps_its_own_tools_gets_no_tools_section() {
+        assert!(!prompt_for(0, 2, None).contains("## Session Tools"));
     }
 }

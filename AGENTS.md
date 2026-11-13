@@ -38,7 +38,7 @@ src/
 │   ├── policy.rs        # Review-cycle policy: review-cycle mode, finding dispositions, `same_finding`, stale change requests
 │   ├── stack.rs         # Stacked PRs: change fingerprint, base-chain/native stack detection, stack prompt context
 │   ├── pipeline_tests.rs # End-to-end review cycles against a mock GitHub and a stub `claude` harness
-│   └── parser.rs        # JSON extraction (marked block → brace-match → raw fallback), schema validation
+│   └── parser.rs        # JSON extraction (marked block → brace-match; anything else is raw), schema validation
 └── store/
     └── db.rs            # SQLite (rusqlite, WAL mode) — pr_state, review_log, daemon_status, migrations
 ```
@@ -50,8 +50,8 @@ src/
 The core flow for `review_existing_pr`:
 1. Evaluate fork policy → skip if denied
 2. Build dedupe key (`sha256(repo + pr + sha + harness)`) → `claim_review` (atomic INSERT, unique constraint)
-3. Check existing GitHub reviews for this SHA → post in-progress comment only if not already reviewed (a docs-only, empty-diff or unchanged-diff skip in step 4 rewrites it to say the review was skipped and why)
-4. `run_review_pipeline`: fetch diff + file contents + GitNexus context + prior reviews → build prompt → spawn harness → parse output → validate comment positions → post review
+3. Check existing GitHub reviews for this SHA → post in-progress comment only if not already reviewed (a docs-only, empty-diff or unchanged-diff skip in step 4 rewrites it to say the review was skipped and why; a harness reply with no review rewrites it to say the review failed)
+4. `run_review_pipeline`: fetch diff + file contents + GitNexus context + prior reviews → build prompt → spawn harness → parse output → validate comment positions → post review. A reply without a valid `pr-review-json` review (raw or empty) fails the review; it is never posted.
 5. On 422 (self-review), retry as COMMENT with inline comments folded into body
 6. `complete_review` in DB with actual posted comment count
 
@@ -63,6 +63,7 @@ All harnesses run in a sandboxed environment:
 - Stripped env vars: `HOME`, `SSH_AUTH_SOCK`, `GH_TOKEN`, `AWS_*`, `ANTHROPIC_API_KEY`, `CLAUDECODE`
 - `kill_on_drop(true)` on child process to prevent orphans on timeout
 - claude-code uses stdin piping (`-p -`) because prompts exceed Linux `MAX_ARG_STRLEN` (~128KB)
+- When the harness limits tools (`Harness::limits_tools`, claude-code only), the review prompt names them, or says there are none. Without that, instructions that need a tool make the model write the tool call as text and stop
 
 ### Token Resolution (token/mod.rs)
 
