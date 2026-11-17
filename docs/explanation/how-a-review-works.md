@@ -50,7 +50,7 @@ A **critical finding** is the exception. After the limit it is still posted inli
 
 After the limit, a critical finding must also sit on a line the PR adds or removes. A critical finding elsewhere is listed first in the notes, as a "possible blocker". The default `critical_finding_kinds` includes `correctness`, so a proven blocking bug in changed code can still stop a merge in any review cycle. To bound blocking findings too, remove `correctness` from the list. The cost of the changed-line rule: after the limit, a break in a file the PR did not touch, such as a caller of a changed function, is only a note.
 
-A review cycle is one reviewed commit. The bot counts its earlier reviews on GitHub, so the count survives a reset of its database. If GitHub does not return the list of reviews, the bot tries once more and then fails the review. It does not guess the review cycle.
+A review cycle is one reviewed commit. The bot counts its earlier reviews on GitHub, so the count survives a reset of its database. Reviews of [peer daemons](../how-to/share-repositories-with-a-peer.md) count too, so a standby goes on from the review cycle where its peer stopped. If GitHub does not return the list of reviews, the bot tries once more and then fails the review. It does not guess the review cycle.
 
 The bot also does not repeat itself:
 

@@ -954,7 +954,18 @@ impl ReviewEngine {
             .context("cannot identify the bot account, so review cycles cannot be counted")?,
         };
         let bot_alias = Some(bot_alias_owned.as_str());
-        let resolved_threads = if review_comments
+        // A peer's reviews and threads count as this daemon's history, so a
+        // standby continues the peer's review cycles. Dismissals and replies
+        // below still act on the real lists.
+        let (history_reviews, history_comments, history_issue_comments) =
+            crate::peer::history_with_peer_work(
+                &existing_reviews,
+                &review_comments,
+                &issue_comments,
+                &self.config.defaults.peer_logins,
+                &bot_alias_owned,
+            );
+        let resolved_threads = if history_comments
             .iter()
             .any(|comment| login_matches_bot(&comment.user.login, bot_name, bot_alias))
         {
@@ -989,9 +1000,9 @@ impl ReviewEngine {
                 vec![]
             });
         let review_memory = build_review_memory(
-            &existing_reviews,
-            &review_comments,
-            &issue_comments,
+            &history_reviews,
+            &history_comments,
+            &history_issue_comments,
             self.config.defaults.bot_name.as_str(),
             bot_alias,
             pr_data.head.sha.as_str(),
@@ -999,9 +1010,9 @@ impl ReviewEngine {
             &resolved_threads,
         );
         let prior_reviews_context = build_prior_reviews_context(
-            &existing_reviews,
-            &review_comments,
-            &issue_comments,
+            &history_reviews,
+            &history_comments,
+            &history_issue_comments,
             self.config.defaults.bot_name.as_str(),
             bot_alias,
             pr_data.head.sha.as_str(),
@@ -1013,7 +1024,7 @@ impl ReviewEngine {
         }
 
         let addressed_findings = build_addressed_findings(
-            &review_comments,
+            &history_comments,
             &parsed_diff,
             self.config.defaults.bot_name.as_str(),
             bot_alias,
@@ -1089,7 +1100,7 @@ impl ReviewEngine {
             };
 
         let round = ReviewRound::after_prior_reviews(
-            count_prior_bot_reviews(&existing_reviews, bot_name, bot_alias, &pr_data.head.sha),
+            count_prior_bot_reviews(&history_reviews, bot_name, bot_alias, &pr_data.head.sha),
             policy.max_review_cycles,
         );
         let stack_info = if policy.stack_aware {

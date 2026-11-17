@@ -149,6 +149,53 @@ pub fn peer_thread_owner<'a>(
     is_peer(&current.user.login, peers).then_some(current.user.login.as_str())
 }
 
+/// The review history of a PR as this daemon reads it: the peers' work, posted
+/// as `bot_login`. A standby then continues the peer's review cycles, sees the
+/// peer's findings as earlier findings, and does not raise them again.
+///
+/// A peer's review and conversation comment count only with a pr-reviewer
+/// marker, so a person who uses the peer's account by hand stays a person.
+/// Every review-thread comment of a peer's login counts, as in
+/// [`peer_thread_owner`].
+///
+/// Use the result only to read history. Act on the real lists: a daemon
+/// dismisses, resolves and answers only its own work.
+pub fn history_with_peer_work(
+    reviews: &[PullRequestReview],
+    review_comments: &[ReviewComment],
+    issue_comments: &[IssueComment],
+    peers: &[String],
+    bot_login: &str,
+) -> (
+    Vec<PullRequestReview>,
+    Vec<ReviewComment>,
+    Vec<IssueComment>,
+) {
+    let as_bot = |login: &mut String, counts: bool| {
+        if counts && is_peer(login, peers) {
+            *login = bot_login.to_string();
+        }
+    };
+    let mut reviews = reviews.to_vec();
+    for review in &mut reviews {
+        let marked = review
+            .body
+            .as_deref()
+            .is_some_and(|body| body.contains(REVIEW_METADATA_MARKER));
+        as_bot(&mut review.user.login, marked);
+    }
+    let mut review_comments = review_comments.to_vec();
+    for comment in &mut review_comments {
+        as_bot(&mut comment.user.login, true);
+    }
+    let mut issue_comments = issue_comments.to_vec();
+    for comment in &mut issue_comments {
+        let marked = comment.body.contains("<!-- pr-reviewer");
+        as_bot(&mut comment.user.login, marked);
+    }
+    (reviews, review_comments, issue_comments)
+}
+
 fn is_fresh(timestamp: &str, stale_after_secs: u64, now: DateTime<Utc>) -> bool {
     let Ok(at) = DateTime::parse_from_rfc3339(timestamp) else {
         // Unknown age: assume the peer is still working rather than review
