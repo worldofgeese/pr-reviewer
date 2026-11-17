@@ -74,7 +74,8 @@ The claim narrows the race but is not a lock. If both daemons claim in the same 
 
 ## Limits
 
-- A review that a peer posted earlier does not count toward this daemon's [review cycles](../explanation/how-a-review-works.md#review-cycles). If the standby reviews a pull request that the primary reviewed before, the standby starts at review cycle 1 and can raise findings again that the primary's open threads already hold.
+- A daemon continues the [review cycles](../explanation/how-a-review-works.md#review-cycles) of its peers. A peer's review that carries the pr-reviewer marker counts as a review cycle, and the peer's review threads count as earlier findings. So if the standby reviews a pull request that the primary reviewed before, it goes on at the primary's next review cycle and does not raise the primary's open findings again. A review that a person posted by hand from a peer's account does not count.
+- A standby that reviews a pull request for the first time has no stored state for it. It cannot show the diff since the peer's last review, and it cannot skip a push whose change is the same as the last one the peer reviewed.
 - Each daemon dismisses only its own change requests. A change request from the standby stays until the standby dismisses it, or until a person does.
 - A mention in a review thread that a peer started waits for that peer. When the peer is off, it answers after it starts again.
 - A daemon uses its own `harness.timeout_secs` to decide that a peer's status comment is stale. Give both daemons the same value.

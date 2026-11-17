@@ -1831,3 +1831,111 @@ async fn a_running_daemon_leaves_its_own_fresh_claim() {
 
     assert_eq!(claim_log(&gh).len(), 1, "a live cycle keeps its claim");
 }
+
+/// A peer daemon's review, as `bot_review` makes this daemon's, under the
+/// peer's own login.
+fn peer_review(id: u64, sha: &str, state: &str) -> Value {
+    let mut review = bot_review(id, sha, state);
+    review["user"]["login"] = json!("peer-user");
+    review["body"] = json!(format!(
+        "<details>\n{MARKER}https://example.test)\n</details>\nThe peer's review of {sha}."
+    ));
+    review
+}
+
+fn peer_comment(id: u64, line: u32, body: &str) -> Value {
+    let mut comment = bot_comment(id, line, body);
+    comment["user"]["login"] = json!("peer-user");
+    comment
+}
+
+#[tokio::test]
+async fn a_standby_continues_the_review_cycles_of_its_peer() {
+    let run = Run::new("peer-cycles");
+    let mut config = (*config(&run)).clone();
+    config.defaults.peer_logins = vec!["peer-user".to_string()];
+    let config = Arc::new(config);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    // The model repeats the peer's open warning and adds a nitpick.
+    run.respond(
+        1,
+        review_json(
+            "comment",
+            json!([
+                {"file": "src/fetch.rs", "line": 3, "severity": "warning", "finding_kind": "security",
+                 "body": "Still open: `Cache::shared` builds its key without the token scope, so tokens with different repo access read each other's cached responses."},
+                {"file": "src/fetch.rs", "line": 2, "body": NITPICK, "severity": "nitpick",
+                 "finding_kind": "correctness"}
+            ]),
+        ),
+    );
+    let diff = fetch_diff(
+        "@@ -1,4 +1,6 @@",
+        &[
+            " pub fn fetch_all(client: &Client) -> Vec<Page> {",
+            "+    let pages = loop_with_backoff(client);",
+            "+    let cache = Cache::shared(TOKEN_SCOPE_IGNORED);",
+            "     let mut out = Vec::new();",
+            "     out",
+            " }",
+        ],
+    );
+    let mut state = GitHubState::new(pr_json(7, "s2", "feat/fetch", "main"), diff);
+    state.reviews = vec![peer_review(100, "s1", "CHANGES_REQUESTED")];
+    state.review_comments = vec![peer_comment(202, 3, CACHE_WARNING)];
+    let gh = mock_github(state);
+    let result = review_round(&config, &db, &gh, 7).await;
+    assert_eq!(result.status, "completed");
+
+    let prompt = run.prompt(1);
+    assert!(
+        prompt.contains("This is review cycle 2 of up to 2 review cycles"),
+        "the peer's review of s1 was review cycle 1"
+    );
+    assert!(
+        prompt.contains("The peer's review of s1."),
+        "the peer's review is in the review history"
+    );
+    assert!(
+        prompt.contains(CACHE_WARNING),
+        "the peer's finding is an earlier finding"
+    );
+    let posted = gh.posted_reviews.lock().unwrap().clone();
+    let comments = posted[0]["comments"].as_array().unwrap();
+    assert_eq!(
+        comments.len(),
+        1,
+        "the peer's open finding is not posted again: {comments:?}"
+    );
+    assert_eq!(comments[0]["body"], NITPICK);
+    assert!(
+        gh.dismissed.lock().unwrap().is_empty(),
+        "a daemon dismisses only its own change requests"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_review_without_the_marker_is_not_a_review_cycle() {
+    let run = Run::new("peer-by-hand");
+    let mut config = (*config(&run)).clone();
+    config.defaults.peer_logins = vec!["peer-user".to_string()];
+    let config = Arc::new(config);
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Database::new(db_dir.path().join("state.db")).await.unwrap();
+    run.respond(1, review_json("comment", json!([])));
+    let mut state = GitHubState::new(
+        pr_json(7, "s2", "feat/fetch", "main"),
+        simple_diff("retry_slowly();"),
+    );
+    // The person behind the peer's account reviewed by hand.
+    let mut by_hand = peer_review(100, "s1", "COMMENTED");
+    by_hand["body"] = json!("Looks fine to me.");
+    state.reviews = vec![by_hand];
+    let gh = mock_github(state);
+    let result = review_round(&config, &db, &gh, 7).await;
+    assert_eq!(result.status, "completed");
+    assert!(run
+        .prompt(1)
+        .contains("This is the first review of this PR. Make it complete"));
+}
